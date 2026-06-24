@@ -1,0 +1,7 @@
+# Normalize line endings to LF in the repo (quiets CRLF warnings, keeps CI happy).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.duckdb binary
+*.ico binary
