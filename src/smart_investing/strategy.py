@@ -62,9 +62,14 @@ def compile_strategy(
     vr = validate(orders, account, last_prices, val_risk)
     backtest = backtest_constant_weights(px, opt.weights)
 
+    cap_note = (
+        f" (cap relaxed to {eff_cap:.0%} — only {len(priced)} priced names)"
+        if eff_cap > spec.risk.concentration_cap + 1e-9
+        else ""
+    )
     rationale = (
         f"Theme [{', '.join(spec.themes)}] -> {len(priced)} priced names ({source}); "
-        f"objective {spec.objective.value}, cap {spec.risk.concentration_cap:.0%}; "
+        f"objective {spec.objective.value}, cap {spec.risk.concentration_cap:.0%}{cap_note}; "
         f"{len(orders)} orders; circuit breaker {'PASS' if vr.ok else 'BLOCK'}"
         + ("" if vr.ok else f" ({len(vr.fatal)} fatal)")
     )
