@@ -76,7 +76,9 @@ including autonomous rebalancing, with zero real-money risk.
   *Done when:* the whole backend is usable over HTTP.
 
 ## Stage E — Product & Real Money (frontend BEFORE Robinhood)
-- [ ] **Phase 10 — Frontend (Next.js).** Connect/onboarding, prompt interface,
+- [x] **Phase 10 — Frontend (Next.js).** Verified end-to-end in-browser: prompt →
+  parsed spec → universe table → efficient-frontier + allocation charts →
+  approve → paper execution. (Configurator sliders for source-weights = polish.) Connect/onboarding, prompt interface,
   anti-black-box configurator (source sliders, risk, indirect toggle),
   efficient-frontier + allocation charts, knowledge-graph network viz with
   branch-pruning, proposal review + one-click approve, notification center,
