@@ -66,8 +66,8 @@ including autonomous rebalancing, with zero real-money risk.
 - [x] **Phase 7 — Persistence & state.** Users, strategies, positions, cost-basis,
   run history, immutable audit log.
   *Done when:* state survives restarts and is reloadable.
-- [~] **Phase 8 — Scheduler & autonomous rebalancing.** (Diff-engine rebalance +
-  `/rebalance` trigger done; cron worker + push notifications pending.) Bi-weekly re-ingest →
+- [x] **Phase 8 — Scheduler & autonomous rebalancing.** (Diff-engine rebalance,
+  autonomous auto-execute, in-process scheduler; push notifications pending.) Bi-weekly re-ingest →
   re-optimize → diff engine (target vs current) → validator → propose/execute;
   manual-approval vs fully-autonomous modes; notifications.
   *Done when:* a scheduled rebalance fires, proposes, and executes on approval (paper).

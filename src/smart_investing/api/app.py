@@ -9,11 +9,13 @@ Robinhood MCP broker (Phase 11) needs no API change.
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from smart_investing.broker.paper import PaperBroker
 from smart_investing.data.store import Store
 from smart_investing.domain.types import Proposal
+from smart_investing.execution.executor import execute_proposal
 from smart_investing.persistence.repo import StateRepo
 from smart_investing.strategy import compile_strategy
 
@@ -27,6 +29,12 @@ class CompileRequest(BaseModel):
 
 def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, default_cash: float = 10_000.0) -> FastAPI:
     app = FastAPI(title="smart-investing API", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     state = {"store": store, "repo": repo, "broker": broker, "llm": llm, "embedder": embedder}
 
     def get_store() -> Store:
@@ -86,8 +94,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         if not p.trades:
             raise HTTPException(400, "proposal has no executable trades (was it blocked?)")
         b = get_broker()
-        b.set_prices({o.symbol: o.est_price for o in p.trades if o.est_price})
-        results = [b.place_order(o) for o in p.trades]
+        results = execute_proposal(p, b)
         acct = b.get_account_state()
         get_repo().save_portfolio(acct, b.realized_pnl)
         get_repo().save_execution(pid, acct)
