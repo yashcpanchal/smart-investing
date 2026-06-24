@@ -95,3 +95,22 @@ def test_rebalance_sell_funds_buy():
     res = validate(orders, acct, PRICES, RiskParams(concentration_cap=0.6))
     assert res.ok
     assert any(v.code == "settlement_assumption" for v in res.warnings)
+
+
+def test_est_price_spoof_cannot_bypass_cash():
+    # Attacker understates cost via est_price; breaker must use the trusted feed.
+    acct = _empty_account(cash=1_000.0)
+    orders = [Order(symbol="AAA", side=OrderSide.BUY, quantity=50, est_price=1.0)]  # claims $50
+    res = validate(orders, acct, {"AAA": 100.0})  # real cost $5,000
+    assert not res.ok
+    assert any(v.code == "insufficient_cash" for v in res.fatal)
+
+
+def test_symbol_absent_from_feed_rejected():
+    # A symbol carried only by est_price (not in the trusted feed) must be rejected,
+    # not silently dropped from the concentration denominator.
+    acct = _empty_account(cash=10_000.0)
+    orders = [Order(symbol="ZZZ", side=OrderSide.BUY, quantity=10, est_price=5.0)]
+    res = validate(orders, acct, {"AAA": 100.0})
+    assert not res.ok
+    assert any(v.code == "bad_price" for v in res.fatal)

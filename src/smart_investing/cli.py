@@ -44,5 +44,30 @@ def optimize(
     )
 
 
+@app.command()
+def ingest(
+    tickers: str = typer.Argument(..., help="Comma-separated tickers to ingest from EDGAR."),
+) -> None:
+    """Pull latest 10-K Business/Risk sections from SEC EDGAR into the local store."""
+    from rich.console import Console
+
+    from smart_investing.data import ingest_companies
+
+    console = Console()
+    syms = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    summary, store = ingest_companies(syms)
+    for t, sizes in summary["ok"]:
+        console.print(f"[green]✓[/] {t}: " + ", ".join(f"{k} {n:,}c" for k, n in sizes.items()))
+    for t, why in summary["skipped"]:
+        console.print(f"[yellow]–[/] {t}: {why}")
+    for t, err in summary["errors"]:
+        console.print(f"[red]✗[/] {t}: {err}")
+    console.print(
+        f"\nStore: {store.count('companies')} companies, "
+        f"{store.count('filings')} filings, {store.count('documents')} documents"
+    )
+    store.close()
+
+
 if __name__ == "__main__":
     app()

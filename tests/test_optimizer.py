@@ -62,3 +62,29 @@ def test_degenerate_identical_assets_does_not_crash():
     res = optimize(px, objective=Objective.MAX_SHARPE, risk=RiskParams(concentration_cap=0.5))
     assert abs(sum(res.weights.values()) - 1.0) < 1e-3
     assert np.isfinite(res.volatility)
+
+
+def test_infeasible_cap_relaxed_to_inv_n():
+    # cap 0.1 with 3 assets is infeasible (0.1*3 < 1); must relax to ~1/n and
+    # never emit a cap-violating weight set.
+    px = synthetic_prices(["A", "B", "C"], n_days=300, seed=3)
+    res = optimize(px, objective=Objective.MAX_SHARPE, risk=RiskParams(concentration_cap=0.1))
+    assert abs(sum(res.weights.values()) - 1.0) < 1e-3
+    assert max(res.weights.values()) <= 1.0 / 3 + 1e-6
+
+
+def test_single_asset_no_crash():
+    px = synthetic_prices(["A"], n_days=300, seed=3)
+    res = optimize(px, objective=Objective.MAX_SHARPE, risk=RiskParams(concentration_cap=0.3))
+    assert abs(res.weights["A"] - 1.0) < 1e-6
+    assert len(res.frontier) >= 1
+    assert np.isfinite(res.volatility)
+
+
+def test_short_history_no_nan():
+    import pandas as pd
+
+    px = pd.DataFrame({"A": [100.0, 101.0], "B": [50.0, 50.5]})  # only 1 return row
+    res = optimize(px, risk=RiskParams(concentration_cap=0.6))
+    assert np.isfinite(res.volatility)
+    assert abs(sum(res.weights.values()) - 1.0) < 1e-3

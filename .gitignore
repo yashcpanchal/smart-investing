@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# smart-investing local data (DuckDB store, caches, indexes)
+/data/
+*.duckdb
+*.duckdb.wal

@@ -48,7 +48,7 @@ including autonomous rebalancing, with zero real-money risk.
   optimize → validate → paper-execute → positions & P&L. End-to-end on fake money.
 
 ## Stage C — Data & Thematic Intelligence (the "indirect connections" moat)
-- [ ] **Phase 4 — Data ingestion.** EDGAR client (10-K Item 1/1A, 13F-HR, Form 4),
+- [x] **Phase 4 — Data ingestion.** EDGAR client (10-K Item 1/1A, 13F-HR, Form 4),
   ticker↔CIK master, DuckDB storage; price-history store.
   *Done when:* ingest ~300–500 companies; query business text + filings.
 - [ ] **Phase 5 — Thematic retrieval.** Local embeddings + FAISS/Chroma + BM25 +

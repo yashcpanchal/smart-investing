@@ -2,7 +2,12 @@
 
 This is the hard gate every order array passes through before it can reach a
 broker. It cannot be reasoned around by an LLM — it is plain arithmetic and it
-either passes or it halts. Checks run sanity-first (so malformed input can't
+either passes or halts.
+
+Trust model: ALL valuation uses the broker-supplied `prices` feed, never an
+order's `est_price` (which is caller-controlled and could be spoofed to
+understate cost or dodge the concentration cap). Any order whose symbol lacks a
+trusted price is rejected. Checks run sanity-first (so malformed input can't
 poison the notional math), then short, cash, concentration, breadth, and PDT.
 """
 
@@ -37,15 +42,11 @@ def validate(
     risk = risk or RiskParams()
     v: list[Violation] = []
 
-    def order_price(o: Order) -> float | None:
-        if o.est_price is not None:
-            return o.est_price
-        return prices.get(o.symbol)
-
     # ---- 1. Sanity (short-circuit: bad input makes all later math unsafe) ----
+    # Price comes from the TRUSTED feed only; est_price is ignored for safety.
     sane = True
     for o in orders:
-        px = order_price(o)
+        px = prices.get(o.symbol)
         if not o.symbol or not isinstance(o.symbol, str):
             v.append(Violation(code="bad_symbol", message="empty/invalid symbol"))
             sane = False
@@ -53,7 +54,7 @@ def validate(
             v.append(Violation(code="bad_quantity", message=f"{o.symbol}: non-positive/NaN quantity {o.quantity}"))
             sane = False
         if px is None or not math.isfinite(px) or px <= 0:
-            v.append(Violation(code="bad_price", message=f"{o.symbol}: missing/invalid price"))
+            v.append(Violation(code="bad_price", message=f"{o.symbol}: no valid market price in feed"))
             sane = False
         if o.order_type == OrderType.LIMIT and (o.limit_price is None or o.limit_price <= 0):
             v.append(Violation(code="bad_limit", message=f"{o.symbol}: limit order needs positive limit_price"))
@@ -65,7 +66,7 @@ def validate(
         p = prices.get(sym)
         if p:
             return p
-        if sym in account.positions:
+        if sym in account.positions:  # held but not in feed: value at cost basis
             return account.positions[sym].avg_cost
         return None
 
@@ -74,7 +75,7 @@ def validate(
     buy_cost = 0.0
     sell_proceeds = 0.0
     for o in orders:
-        px = order_price(o)  # guaranteed valid by sanity pass
+        px = prices[o.symbol]  # trusted; guaranteed present by sanity pass
         if o.side == OrderSide.BUY:
             net_delta[o.symbol] += o.quantity
             buy_cost += o.quantity * px
@@ -106,13 +107,13 @@ def validate(
             severity=Severity.WARN,
         ))
 
-    # ---- 5. Post-trade concentration & breadth ----
+    # ---- 5. Post-trade concentration & breadth (trusted valuation) ----
     projected: dict[str, float] = {s: p.quantity for s, p in account.positions.items()}
     for sym, delta in net_delta.items():
         projected[sym] = projected.get(sym, 0.0) + delta
     projected = {s: q for s, q in projected.items() if q > 1e-9}
 
-    proj_value = {s: q * val_price(s) for s, q in projected.items() if val_price(s)}
+    proj_value = {s: q * val_price(s) for s, q in projected.items() if val_price(s) is not None}
     cash_after = account.cash - buy_cost + sell_proceeds
     equity_after = cash_after + sum(proj_value.values())
     if equity_after > 0:
