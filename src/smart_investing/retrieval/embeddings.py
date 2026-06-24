@@ -58,13 +58,20 @@ class TfidfEmbedder:
         return mat
 
 
+# Process-level model cache: loading a SentenceTransformer is ~15-20s, so we do
+# it once and reuse across requests (the API was paying it on every /compile).
+_MODEL_CACHE: dict = {}
+
+
 class SentenceTransformerEmbedder:
-    """Wraps a local sentence-transformers model (downloaded once, then cached)."""
+    """Wraps a local sentence-transformers model (loaded once per process)."""
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-        from sentence_transformers import SentenceTransformer
+        if model_name not in _MODEL_CACHE:
+            from sentence_transformers import SentenceTransformer
 
-        self.model = SentenceTransformer(model_name)
+            _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
+        self.model = _MODEL_CACHE[model_name]
         self.model_name = model_name
 
     @property

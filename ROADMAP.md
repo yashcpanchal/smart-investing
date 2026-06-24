@@ -84,7 +84,9 @@ including autonomous rebalancing, with zero real-money risk.
   branch-pruning, proposal review + one-click approve, notification center,
   portfolio/P&L dashboard. Runs against PaperBroker + the API.
   *Done when:* a non-technical user can go prompt → tune → review → approve → watch, in-browser.
-- [ ] **Phase 11 — Real Robinhood MCP integration.** MCP client to
+- [~] **Phase 11 — Real Robinhood MCP integration.** (Scaffold + tool-discovery +
+  setup doc done; needs desktop OAuth + live tool-name confirmation — see
+  `docs/robinhood_mcp.md`.) MCP client to
   `agent.robinhood.com/mcp/trading`, OAuth onboarding, `RobinhoodMCPBroker`
   implementing `BrokerAdapter`, reconcile RH preview/approve/push with our flow;
   feature-flag swap PaperBroker ↔ Robinhood.
