@@ -18,12 +18,21 @@ _SUFFIXES = re.compile(
 )
 
 
-def core_name(title: str) -> str:
-    """Most distinctive token of a company name (for co-mention matching)."""
+def name_keys(title: str) -> list[str]:
+    """Distinctive match key(s) for co-mention detection.
+
+    Multi-word names -> the leading BIGRAM (e.g. "advanced micro"), which almost
+    never collides; single-word names -> that token if long enough. Using the
+    bigram avoids the false positives a single generic token causes ("advanced",
+    "micro", "energy" matching unrelated filings)."""
     t = re.sub(r"[^a-z0-9 ]", " ", title.lower())
     t = _SUFFIXES.sub(" ", t)
     toks = [w for w in t.split() if len(w) >= 4]
-    return max(toks, key=len) if toks else ""
+    if len(toks) >= 2:
+        return [f"{toks[0]} {toks[1]}"]
+    if toks and len(toks[0]) >= 5:
+        return [toks[0]]
+    return []
 
 
 class RelationGraph:
@@ -62,14 +71,14 @@ def build_comention_graph(
 
     companies: list of (ticker, title); texts: {ticker: filing_text}.
     """
-    names = {t: core_name(title) for t, title in companies}
-    names = {t: n for t, n in names.items() if n}
+    keys = {t: name_keys(title) for t, title in companies}
+    keys = {t: k for t, k in keys.items() if k}
     g = RelationGraph()
     for ticker, text in texts.items():
         low = text.lower()
-        for other, core in names.items():
+        for other, other_keys in keys.items():
             if other == ticker:
                 continue
-            if re.search(rf"\b{re.escape(core)}\b", low):
+            if any(re.search(rf"\b{re.escape(k)}\b", low) for k in other_keys):
                 g.add_edge(ticker, other, rel="co_mention", weight=1.0)
     return g

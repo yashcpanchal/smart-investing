@@ -35,7 +35,9 @@ class RetrievalIndex:
         else:
             dense = np.zeros(len(self.tickers))
         sparse = self.bm25.scores(q)
-        fused = reciprocal_rank_fusion([argsort_desc(dense), argsort_desc(sparse)])
+        # k=20 (not 60): sharpens the gap between strong and weak ranks so BM25
+        # keyword overlap can't drag off-theme names into the top.
+        fused = reciprocal_rank_fusion([argsort_desc(dense), argsort_desc(sparse)], k=20)
         ranked = sorted(fused.items(), key=lambda kv: -kv[1])[:top_k]
         return [
             {

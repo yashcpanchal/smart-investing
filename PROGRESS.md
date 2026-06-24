@@ -4,35 +4,53 @@ Running log of the autonomous overnight build. Newest first.
 
 ## Session 1 (overnight, 2026-06-24)
 
-**Done & pushed to `dev`:**
+### ✅ Done & pushed to `dev` (Phases 0–6, two demos working)
+
 - **Phase 0** — repo scaffold, `uv` env, hatchling build, pydantic domain
-  contracts (`StrategySpec`, `AssetUniverse`, `Order`, `AccountState`,
-  `Proposal`, enums, IDs, timestamps), config via `.env`, CI workflow.
-- **Phase 1** — quant engine: yfinance + synthetic price adapters; returns/cov;
-  cvxpy optimizer (max-Sharpe via Charnes-Cooper, min-vol, target-vol; no-short;
-  concentration cap; solver fallback); efficient frontier; constant-weight
-  backtest; Monte-Carlo terminal-return sim; metrics (Sharpe, vol, maxDD, CAGR).
-- **Phase 2** — deterministic circuit breaker: sanity-first, no-short, cash
-  sufficiency, post-trade concentration, max-positions, PDT block. Aggregates
-  same-symbol orders; returns all violations.
-- **Phase 3** — `BrokerAdapter` interface + `PaperBroker` (cost-basis averaging,
-  realized P&L, cents-rounding, order status/idempotency). Diff-engine planner
-  (`plan_orders`).
-- **Demo 1** — `python -m smart_investing.demo`: ran end-to-end on **live**
-  semiconductor prices → max-Sharpe allocation (Sharpe ~1.7) → circuit breaker
-  PASS → paper execution into fractional positions, $0 cash left.
-- **Tests** — 31 passing (optimizer math, adversarial circuit-breaker cases,
-  paper-broker cost-basis/P&L, metrics, planner).
+  contracts, config via `.env`, CI workflow, `.gitattributes`.
+- **Phase 1** — quant engine: yfinance + synthetic prices; cvxpy optimizer
+  (max-Sharpe via Charnes-Cooper, min-vol, target-vol; no-short; concentration
+  cap; capped-simplex projection; solver fallback); efficient frontier; backtest;
+  Monte-Carlo; metrics.
+- **Phase 2** — deterministic circuit breaker: sanity-first, no-short, cash,
+  post-trade concentration, max-positions, PDT. Trusts only the market price
+  feed (never caller `est_price`).
+- **Phase 3** — `BrokerAdapter` + `PaperBroker` (cost-basis, realized P&L, cents
+  rounding, order ids/status). Diff-engine planner.
+- **🎯 Demo 1** — `python -m smart_investing.demo`: theme → optimize → validate →
+  paper-execute, on live data.
+- **Phase 4** — SEC EDGAR ingest (10-K Business/Risk sections, last-header
+  heuristic, html.unescape), DuckDB store, `si ingest`. Verified on real filings.
+- **Phase 5** — thematic retrieval: SentenceTransformer (all-MiniLM) + TF-IDF
+  fallback, hand-rolled BM25, RRF fusion (k=20), relevance gate, co-mention
+  graph (distinctive-bigram matching) → `build_universe`.
+- **Phase 6** — LLM compiler: Gemini (REST, retry/backoff) parses prompt →
+  StrategySpec; deterministic fallback. `compile_strategy` orchestrator → Proposal.
+- **🎯 Demo 2 (MVP-alpha)** — `si strategy "<thesis>"`: NL prompt → Gemini spec →
+  hybrid+graph universe → MPT → circuit breaker → paper execution. Verified:
+  "nuclear + uranium, lower risk, diversified" → target_vol@20% cap, nuclear/
+  defense portfolio, executed on paper.
 
-**Reviewed by confirmation subagents** before building: domain contracts,
-optimizer math (Charnes-Cooper transform verified), risk/broker design. Their
-fixes were folded in (order IDs, enums, buying_power, solver guards, frontier
-upper-bound, net-position concentration, settlement assumption).
+**Tests:** 49 passing. **Lint:** ruff clean. **CI:** GitHub Actions.
 
-**Next:** Phase 4 (EDGAR ingest) → Phase 5 (hybrid retrieval + supply-chain
-graph) → Phase 6 (LLM strategy compiler, Gemini) → Demo 2 (NL prompt → portfolio).
+### Reviewed by confirmation subagents (per founder request)
+Domain contracts, optimizer math (Charnes-Cooper verified), risk/broker design,
+then adversarial code audits + a retrieval-quality review. Folded in: order ids/
+enums/buying_power; trusted-price circuit breaker (closed 2 bypasses);
+effective-cap + capped-simplex projection (no cap-violating weights); short-
+history/single-asset guards; raw-cosine relevance + gate; bigram co-mention.
 
-**Notes for the morning:**
-- Secrets are in `.env` (gitignored): Gemini + GitHub token. **Rotate both when
-  convenient** — they passed through chat.
-- Pushing to `dev` only; `main` untouched. Review + merge at your leisure.
+### Known limitations / next
+- **Phase 7** persistence (Postgres), **Phase 8** scheduler + autonomous
+  rebalance, **Phase 9** FastAPI, **Phase 10** Next.js frontend (before
+  Robinhood, per your call), **Phase 11** real Robinhood MCP.
+- Retrieval 5b: chunk+max-pool embeddings (currently ~256-token truncation);
+  foreign filers (40-F/20-F, e.g. CCJ); LLM-extracted supplier/customer edges.
+- Thematic tilt: optimizer can drift to high-Sharpe defense names over volatile
+  pure-play juniors (math is correct; product may want a relevance tilt).
+
+### Notes for the morning
+- Secrets in `.env` (gitignored): Gemini + GitHub token. **Please rotate both** —
+  they passed through chat.
+- All work on `dev`; `main` untouched. Review + merge at your leisure.
+- `si demo` / `si strategy "..."` / `si ingest TICKERS` / `si optimize T1,T2`.

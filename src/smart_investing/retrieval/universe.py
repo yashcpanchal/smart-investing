@@ -40,25 +40,33 @@ def build_universe(
     *,
     top_k: int = 15,
     embedder=None,
+    relevance_gate: float = 0.5,
+    min_relevance: float = 0.0,
 ) -> AssetUniverse:
+    """relevance_gate: keep a direct hit only if its cosine >= gate * top cosine
+    (drops bottom-half noise, embedder-agnostic). min_relevance: optional
+    absolute cosine floor for the 'everything is weak' case (set per embedder)."""
     spec = spec or StrategySpec(raw_prompt=prompt, themes=[prompt])
     query = prompt or " ".join(spec.themes)
     index, meta = build_index_from_store(store, embedder=embedder)
     titles, texts = meta["titles"], meta["texts"]
     exclude = {s.upper() for s in spec.exclude_symbols}
 
-    hits = index.query(query, top_k=top_k * 2)
+    hits = index.query(query, top_k=top_k * 3)
     max_rrf = max((h["rrf"] for h in hits), default=1.0) or 1.0
-    max_dense = max((h["dense"] for h in hits), default=1.0) or 1.0
+    top_dense = max((h["dense"] for h in hits if h["ticker"] not in exclude), default=0.0)
+    floor = max(min_relevance, relevance_gate * top_dense)
 
     assets: list[UniverseAsset] = []
     seen: set[str] = set()
 
-    # Degree 1 — direct thematic matches. `relevance` = normalized dense cosine
-    # (separates on/off-theme cleanly); `retrieval` = normalized RRF (the rank).
+    # Degree 1 — direct matches passing the relevance gate. `relevance` is the
+    # RAW dense cosine (true on/off-theme separation); `retrieval` is the RRF rank.
     for h in hits:
         t = h["ticker"]
         if t in exclude or t in seen:
+            continue
+        if h["dense"] < floor:  # gate out weak/off-theme names
             continue
         seen.add(t)
         assets.append(
@@ -68,9 +76,8 @@ def build_universe(
                 degree=1,
                 rationale="direct thematic match",
                 scores={
-                    "relevance": round(max(h["dense"], 0.0) / max_dense, 4) if max_dense > 0 else 0.0,
+                    "relevance": round(h["dense"], 4),
                     "retrieval": round(h["rrf"] / max_rrf, 4),
-                    "dense": round(h["dense"], 4),
                     "bm25": round(h["bm25"], 4),
                 },
             )

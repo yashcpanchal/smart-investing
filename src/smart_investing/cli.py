@@ -45,6 +45,19 @@ def optimize(
 
 
 @app.command()
+def strategy(
+    prompt: str = typer.Argument(..., help="Natural-language investment thesis."),
+    cash: float = typer.Option(10_000.0, help="Starting paper cash."),
+    offline: bool = typer.Option(False, help="Use synthetic prices."),
+    reingest: bool = typer.Option(False, help="Re-ingest the demo corpus from EDGAR."),
+) -> None:
+    """Demo 2: compile a natural-language thesis into a paper-executed portfolio."""
+    from smart_investing.demo import run_demo2
+
+    run_demo2(prompt=prompt, initial_cash=cash, live=not offline, reingest=reingest)
+
+
+@app.command()
 def ingest(
     tickers: str = typer.Argument(..., help="Comma-separated tickers to ingest from EDGAR."),
 ) -> None:

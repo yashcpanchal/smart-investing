@@ -56,10 +56,10 @@ including autonomous rebalancing, with zero real-money risk.
   (supplier/customer/competitor); graph traversal for indirect names; 13F/insider
   "smart-money" scoring; configurable fusion ranking (the slider weights).
   *Done when:* `theme prompt → ranked ticker universe` with rationale + prunable graph.
-- [ ] **Phase 6 — Strategy compiler / orchestrator.** LLM prompt → structured
+- [x] **Phase 6 — Strategy compiler / orchestrator.** LLM prompt → structured
   `StrategySpec`; chain retrieval → optimizer → `Proposal`.
   *Done when:* `compile(prompt, config) → Proposal`.
-- [ ] 🎯 **Demo 2 (MVP-alpha):** natural-language thesis → real universe →
+- [x] 🎯 **Demo 2 (MVP-alpha):** natural-language thesis → real universe →
   optimized portfolio → paper execution. The full loop on fake money.
 
 ## Stage D — State, Autonomy & API

@@ -118,5 +118,89 @@ def run_demo1(
     return {"executed": True, "weights": opt.weights, "equity": eq, "orders": len(orders)}
 
 
+DEMO2_TICKERS = [
+    # nuclear / uranium
+    "CCJ", "LEU", "BWXT", "SMR", "OKLO", "UEC", "UUUU", "DNN", "NNE",
+    # quantum / advanced compute
+    "IONQ", "RGTI", "QBTS", "NVDA", "AMD", "AVGO", "MRVL", "ARM",
+    # defense / aerospace
+    "LMT", "RTX", "NOC", "LHX",
+    # clean energy
+    "FSLR", "ENPH", "NEE",
+    # unrelated controls
+    "KO", "WMT", "PG", "MCD",
+]
+
+DEFAULT_PROMPT = (
+    "Invest in nuclear energy and uranium mining, include the supply chain, "
+    "and keep it diversified"
+)
+
+
+def run_demo2(
+    prompt: str = DEFAULT_PROMPT,
+    initial_cash: float = 10_000.0,
+    live: bool = True,
+    reingest: bool = False,
+) -> object:
+    """Demo 2 — the full MVP loop: natural-language prompt -> universe -> optimized
+    portfolio -> paper execution."""
+    from smart_investing.data import Store, ingest_companies
+    from smart_investing.llm.gemini import get_llm
+    from smart_investing.strategy import compile_strategy
+
+    console.rule("[bold]Demo 2 — natural language -> portfolio")
+    console.print(f"Prompt: [italic]{prompt}[/]\n")
+
+    store = Store()
+    if reingest or store.count("documents") < 20:
+        console.print("Ingesting corpus from EDGAR (one-time, cached to data/)...")
+        summary, store = ingest_companies(DEMO2_TICKERS, store=store)
+        console.print(f"  ingested {len(summary['ok'])}, skipped {len(summary['skipped'])}\n")
+
+    llm = get_llm()
+    console.print(f"LLM: {'Gemini' if llm else 'deterministic fallback (no key)'}")
+    proposal = compile_strategy(prompt, store, initial_cash=initial_cash, live=live, llm=llm)
+    spec = proposal.spec
+    line = f"Parsed themes {spec.themes}  objective={spec.objective.value} cap={spec.risk.concentration_cap:.0%}"
+    if spec.risk.target_volatility:
+        line += f" targetVol={spec.risk.target_volatility:.0%}"
+    console.print(line)
+    if spec.exclude_symbols:
+        console.print(f"Excluding: {spec.exclude_symbols}")
+
+    ut = Table(title="\nAsset universe (search results)")
+    ut.add_column("Deg")
+    ut.add_column("Ticker")
+    ut.add_column("Weight", justify="right")
+    ut.add_column("Relevance", justify="right")
+    ut.add_column("Name")
+    for a in proposal.universe.assets:
+        w = proposal.target_weights.get(a.symbol, 0.0)
+        rel = a.scores.get("relevance", a.scores.get("graph_proximity", 0.0))
+        ut.add_row(str(a.degree), a.symbol, f"{w:.1%}", f"{rel:.2f}", a.name[:34])
+    console.print(ut)
+
+    opt, bt = proposal.optimization, proposal.backtest
+    console.print(f"Expected {opt.expected_return:.1%}  vol {opt.volatility:.1%}  Sharpe {opt.sharpe:.2f}")
+    if bt:
+        console.print(f"Backtest total {bt.total_return:.1%}  CAGR {bt.cagr:.1%}  maxDD {bt.max_drawdown:.1%}")
+    console.print(f"\n[bold]{proposal.rationale}[/]")
+
+    if proposal.trades:
+        prices = {o.symbol: o.est_price for o in proposal.trades if o.est_price}
+        broker = PaperBroker(cash=initial_cash, prices=prices)
+        for o in proposal.trades:
+            broker.place_order(o)
+        acct = broker.get_account_state()
+        console.print(
+            f"Paper-executed {len(proposal.trades)} orders. "
+            f"Cash ${acct.cash:,.2f}  Equity ${acct.equity(prices):,.2f}"
+        )
+    console.rule("[bold green]Demo 2 complete — NL prompt to executed paper portfolio")
+    return proposal
+
+
 if __name__ == "__main__":
     run_demo1()
+
