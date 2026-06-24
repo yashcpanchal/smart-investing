@@ -26,25 +26,25 @@ including autonomous rebalancing, with zero real-money risk.
 ---
 
 ## Stage A — Foundation
-- [ ] **Phase 0 — Scaffolding & contracts.** Monorepo layout, env/config, shared
+- [x] **Phase 0 — Scaffolding & contracts.** Monorepo layout, env/config, shared
   domain types (`StrategySpec`, `AssetUniverse`, `TargetWeights`, `Order`,
   `AccountState`, `Proposal`), test harness, CI.
   *Done when:* tests run green in CI; the type contracts every later phase imports exist.
 
 ## Stage B — Core Quant Engine (the differentiator)
-- [ ] **Phase 1 — Optimizer + backtester.** Price loader (yfinance→DuckDB),
+- [x] **Phase 1 — Optimizer + backtester.** Price loader (yfinance→DuckDB),
   returns/covariance, cvxpy mean-variance (max-Sharpe / min-vol / target-vol,
   no-short, concentration cap), JAX (optional) Monte-Carlo + efficient frontier,
   backtester, metrics (Sharpe, vol, max drawdown, CAGR).
   *Done when:* `optimize(tickers, constraints)` → weights + frontier + backtest, deterministically.
-- [ ] **Phase 2 — Deterministic circuit breaker.** Non-LLM validator: Σ|w|≤1
+- [x] **Phase 2 — Deterministic circuit breaker.** Non-LLM validator: Σ|w|≤1
   (no margin), per-asset concentration cap, cash sufficiency, PDT block, wash-sale
   flag, order sanity. Adversarial test suite.
   *Done when:* `validate(orders, account)` → pass/fail + reasons, all bad inputs caught.
-- [ ] **Phase 3 — Broker abstraction + PaperBroker.** `BrokerAdapter` interface,
+- [x] **Phase 3 — Broker abstraction + PaperBroker.** `BrokerAdapter` interface,
   `PaperBroker` simulating fills, holdings ledger, cost-basis, P&L.
   *Done when:* full buy→hold→sell cycle runs on paper with correct P&L.
-- [ ] 🎯 **Demo 1 (internal prototype):** hardcoded theme → fixed tickers →
+- [x] 🎯 **Demo 1 (internal prototype):** hardcoded theme → fixed tickers →
   optimize → validate → paper-execute → positions & P&L. End-to-end on fake money.
 
 ## Stage C — Data & Thematic Intelligence (the "indirect connections" moat)

@@ -1,0 +1,48 @@
+"""`si` command-line entry point."""
+
+from __future__ import annotations
+
+import typer
+
+app = typer.Typer(help="smart-investing — thematic portfolio engine", add_completion=False)
+
+
+@app.command()
+def demo(
+    offline: bool = typer.Option(False, help="Force synthetic data instead of yfinance."),
+    cash: float = typer.Option(10_000.0, help="Starting paper cash."),
+    cap: float = typer.Option(0.30, help="Per-asset concentration cap."),
+) -> None:
+    """Run Demo 1: theme -> optimize -> validate -> paper-execute."""
+    from smart_investing.demo import run_demo1
+
+    run_demo1(initial_cash=cash, concentration_cap=cap, live=not offline)
+
+
+@app.command()
+def optimize(
+    tickers: str = typer.Argument(..., help="Comma-separated tickers, e.g. NVDA,AMD,AVGO"),
+    objective: str = typer.Option("max_sharpe", help="max_sharpe | min_vol | target_vol"),
+    cap: float = typer.Option(0.30, help="Per-asset concentration cap."),
+    offline: bool = typer.Option(False, help="Use synthetic data."),
+) -> None:
+    """Optimize a portfolio for an explicit ticker list."""
+    from rich.console import Console
+
+    from smart_investing.data import load_prices, synthetic_prices
+    from smart_investing.domain.types import Objective, RiskParams
+    from smart_investing.quant import optimize as run_opt
+
+    console = Console()
+    syms = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    px = synthetic_prices(syms) if offline else load_prices(syms, period="2y")
+    res = run_opt(px, objective=Objective(objective), risk=RiskParams(concentration_cap=cap))
+    for s, w in sorted(res.weights.items(), key=lambda kv: -kv[1]):
+        console.print(f"{s:>6}  {w:6.1%}")
+    console.print(
+        f"\nExpected {res.expected_return:.1%}  vol {res.volatility:.1%}  Sharpe {res.sharpe:.2f}"
+    )
+
+
+if __name__ == "__main__":
+    app()

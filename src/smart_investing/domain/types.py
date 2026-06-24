@@ -1,24 +1,34 @@
 """Shared domain contracts. Every later phase imports from here.
 
 These are the nouns of the whole system: a StrategySpec (what the user wants) is
-compiled into an AssetUniverse (what to buy from), optimized into TargetWeights,
-turned into Orders, validated, and executed against an AccountState by a Broker.
+compiled into an AssetUniverse (what to buy from), optimized into target weights,
+turned into Orders, validated by the circuit breaker, and executed against an
+AccountState by a Broker.
+
+Money note: amounts are plain floats for MVP. The broker rounds to cents to avoid
+drift. A Decimal/cents-int migration is deferred until Phase 11 (Robinhood
+reconciliation), where exact equality matters.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex
 
 
 # --------------------------------------------------------------------------- #
-# Orders & account state
+# Enums
 # --------------------------------------------------------------------------- #
 class OrderSide(str, Enum):
     BUY = "buy"
@@ -30,6 +40,28 @@ class OrderType(str, Enum):
     LIMIT = "limit"
 
 
+class OrderStatus(str, Enum):
+    PENDING = "pending"
+    FILLED = "filled"
+    PARTIAL = "partial"
+    REJECTED = "rejected"
+    CANCELED = "canceled"
+
+
+class Objective(str, Enum):
+    MAX_SHARPE = "max_sharpe"
+    MIN_VOL = "min_vol"
+    TARGET_VOL = "target_vol"
+
+
+class Severity(str, Enum):
+    FATAL = "fatal"  # blocks execution
+    WARN = "warn"  # informational
+
+
+# --------------------------------------------------------------------------- #
+# Orders & account state
+# --------------------------------------------------------------------------- #
 class Order(BaseModel):
     symbol: str
     side: OrderSide
@@ -37,6 +69,8 @@ class Order(BaseModel):
     order_type: OrderType = OrderType.MARKET
     limit_price: float | None = None
     est_price: float | None = Field(default=None, description="Price estimate at proposal time.")
+    id: str = Field(default_factory=_new_id, description="Client-side order id (idempotency key).")
+    created_at: str = Field(default_factory=_utcnow_iso)
 
     @property
     def est_notional(self) -> float | None:
@@ -48,7 +82,7 @@ class Order(BaseModel):
 class Position(BaseModel):
     symbol: str
     quantity: float
-    avg_cost: float = Field(description="Cost basis per share.")
+    avg_cost: float = Field(description="Weighted-average cost basis per share.")
 
     @property
     def cost_basis(self) -> float:
@@ -58,8 +92,14 @@ class Position(BaseModel):
 class AccountState(BaseModel):
     cash: float
     positions: dict[str, Position] = Field(default_factory=dict)
+    # Robinhood exposes buying_power directly; for cash accounts it == cash.
+    buying_power: float | None = None
     # Round-trip day trades in the rolling 5 business days (for PDT rule).
     day_trades_5d: int = 0
+    as_of: str = Field(default_factory=_utcnow_iso)
+
+    def effective_buying_power(self) -> float:
+        return self.buying_power if self.buying_power is not None else self.cash
 
     def market_value(self, prices: dict[str, float]) -> float:
         return sum(p.quantity * prices.get(s, p.avg_cost) for s, p in self.positions.items())
@@ -76,10 +116,12 @@ class AccountState(BaseModel):
 
 class OrderResult(BaseModel):
     order: Order
-    status: str  # "filled" | "rejected" | "partial"
+    status: OrderStatus
     filled_quantity: float = 0.0
     filled_price: float = 0.0
     realized_pnl: float = 0.0
+    broker_order_id: str | None = None
+    filled_at: str | None = None
     message: str = ""
 
 
@@ -118,7 +160,7 @@ class StrategySpec(BaseModel):
     source_weights: SourceWeights = Field(default_factory=SourceWeights)
     risk: RiskParams = Field(default_factory=RiskParams)
     rebalance: RebalanceConfig = Field(default_factory=RebalanceConfig)
-    objective: str = Field(default="max_sharpe", description="max_sharpe | min_vol | target_vol")
+    objective: Objective = Objective.MAX_SHARPE
 
 
 # --------------------------------------------------------------------------- #
@@ -156,7 +198,7 @@ class OptimizationResult(BaseModel):
     expected_return: float
     volatility: float
     sharpe: float
-    objective: str = "max_sharpe"
+    objective: Objective = Objective.MAX_SHARPE
     frontier: list[FrontierPoint] = Field(default_factory=list)
 
 
@@ -177,7 +219,7 @@ class BacktestResult(BaseModel):
 class Violation(BaseModel):
     code: str
     message: str
-    severity: str = "fatal"  # "fatal" blocks execution; "warn" is informational
+    severity: Severity = Severity.FATAL
 
 
 class ValidationResult(BaseModel):
@@ -186,13 +228,18 @@ class ValidationResult(BaseModel):
 
     @property
     def fatal(self) -> list[Violation]:
-        return [v for v in self.violations if v.severity == "fatal"]
+        return [v for v in self.violations if v.severity == Severity.FATAL]
+
+    @property
+    def warnings(self) -> list[Violation]:
+        return [v for v in self.violations if v.severity == Severity.WARN]
 
 
 # --------------------------------------------------------------------------- #
 # Proposal (what we show the user before executing)
 # --------------------------------------------------------------------------- #
 class Proposal(BaseModel):
+    id: str = Field(default_factory=_new_id)
     spec: StrategySpec
     universe: AssetUniverse
     optimization: OptimizationResult
