@@ -82,5 +82,13 @@ def ingest(
     store.close()
 
 
+@app.command()
+def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
+    """Run the HTTP API (FastAPI). Ingest a corpus first with `si ingest`."""
+    import uvicorn
+
+    uvicorn.run("smart_investing.api.app:app", host=host, port=port)
+
+
 if __name__ == "__main__":
     app()

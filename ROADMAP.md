@@ -63,14 +63,15 @@ including autonomous rebalancing, with zero real-money risk.
   optimized portfolio → paper execution. The full loop on fake money.
 
 ## Stage D — State, Autonomy & API
-- [ ] **Phase 7 — Persistence & state.** Users, strategies, positions, cost-basis,
+- [x] **Phase 7 — Persistence & state.** Users, strategies, positions, cost-basis,
   run history, immutable audit log.
   *Done when:* state survives restarts and is reloadable.
-- [ ] **Phase 8 — Scheduler & autonomous rebalancing.** Bi-weekly re-ingest →
+- [~] **Phase 8 — Scheduler & autonomous rebalancing.** (Diff-engine rebalance +
+  `/rebalance` trigger done; cron worker + push notifications pending.) Bi-weekly re-ingest →
   re-optimize → diff engine (target vs current) → validator → propose/execute;
   manual-approval vs fully-autonomous modes; notifications.
   *Done when:* a scheduled rebalance fires, proposes, and executes on approval (paper).
-- [ ] **Phase 9 — API layer (FastAPI).** REST + WebSocket over compiler, proposals,
+- [x] **Phase 9 — API layer (FastAPI).** REST + WebSocket over compiler, proposals,
   approvals, account state, history; OpenAPI docs.
   *Done when:* the whole backend is usable over HTTP.
 

@@ -67,6 +67,13 @@ class PaperBroker(BrokerAdapter):
             day_trades_5d=self._day_trades_5d,
         )
 
+    def load_state(self, account: AccountState, realized_pnl: float = 0.0) -> None:
+        """Rehydrate broker state from a persisted account (used on API restart)."""
+        self._cash = float(account.cash)
+        self._positions = dict(account.positions)
+        self._day_trades_5d = account.day_trades_5d
+        self.realized_pnl = realized_pnl
+
     # ---- execution ----
     def _fill_price(self, order: Order) -> float | None:
         if order.order_type == OrderType.LIMIT and order.limit_price:

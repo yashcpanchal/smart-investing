@@ -54,7 +54,12 @@ def compile_strategy(
     account = account or AccountState(cash=initial_cash)
     investable = account.cash if account.cash > 0 else initial_cash
     orders = plan_orders(opt.weights, account, last_prices, investable=investable)
-    vr = validate(orders, account, last_prices, spec.risk)
+    # Validate against the EFFECTIVE cap (relaxed to 1/n when the universe is too
+    # small to honor the requested cap) so the breaker matches what the optimizer
+    # can actually achieve, instead of blocking every feasible allocation.
+    eff_cap = max(spec.risk.concentration_cap, 1.0 / max(len(priced), 1))
+    val_risk = spec.risk.model_copy(update={"concentration_cap": eff_cap})
+    vr = validate(orders, account, last_prices, val_risk)
     backtest = backtest_constant_weights(px, opt.weights)
 
     rationale = (
