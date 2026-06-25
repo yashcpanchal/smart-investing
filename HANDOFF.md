@@ -15,13 +15,22 @@ graph → cvxpy MPT optimizer (+ efficient frontier) → deterministic circuit
 breaker → PaperBroker execution → persisted portfolio. FastAPI backend, Next.js
 frontend.
 
-## Status (2026-06-24)
-- Branch **`dev`** (10 commits; `main` untouched), pushed, working tree clean.
-- Latest commit: `7c69d9c`.
-- **Phases 0–10 DONE** + Demo 1 + Demo 2; **Phase 11 (Robinhood MCP) scaffolded**
-  (needs desktop OAuth). Phases 12–15 not started (need product decisions).
-- ~58 tests passing, ruff clean, GitHub Actions CI.
-- Holistic review verdict: **ship-ready for paper MVP.**
+## Status (2026-06-25 — conversational rebuild)
+- Branch **`dev`**, **NOT pushed** since the rebuild (Dhruv+Yash review first).
+- Paper MVP (Phases 0–11) done; then a major UX rebuild turned the linear form
+  into a **conversational, explorable, 5-view workspace**:
+  - Corpus expanded ~28 → **72 US 10-K filers** (semis/equipment/datacenter/
+    power/nuclear/defense) so supply chains are walkable.
+  - **Explorable supply-chain graph** (walk upstream/downstream/peers).
+  - **Conversation**: freeform chat drives build + refine; graph add/remove and
+    edits route through one agent so all panels stay in sync.
+  - **Per-holding reasoning**, a **per-stock detail panel** (yfinance facts), and
+    an **industry-analysis panel** (supply-chain layers + Google-Search-grounded
+    market commentary).
+- ~87 tests passing; ruff + tsc + eslint + `next build` clean.
+- **Gemini key was rotated** (new one in `.env`). NOTE: heavy build/testing
+  exhausted the free-tier quota — LLM features fall back to deterministic text
+  until quota resets, then the grounded analysis + nicer phrasing light up.
 
 ## Run it
 ```bash
@@ -53,13 +62,31 @@ Optional Robinhood client: `uv pip install -e ".[robinhood]"`.
   cached), `bm25.py`, `fusion.py` (RRF k=20), `graph.py` (co-mention, distinctive
   bigram), `index.py`, `universe.py` (build_universe: direct + indirect, relevance
   gate).
-- `llm/` — `gemini.py` (REST client, retry/backoff), `compiler.py` (prompt →
-  StrategySpec + deterministic fallback).
-- `strategy.py` — `compile_strategy` orchestrator → Proposal.
+- `llm/` — `gemini.py` (REST client; fail-fast retry; `complete_json`,
+  `complete_grounded` = Google-Search grounding; thinking disabled), `compiler.py`
+  (prompt → StrategySpec + deterministic theme-cleaner fallback), `agent.py`
+  (chat message → actions + reply, keyword fallback), `explain.py` (grounded
+  Explanation incl. per-holding `why`), `clarify.py`.
+- `session.py` — in-memory `Session`/`SessionManager` (theme, knobs, pinned/
+  excluded, cached base_spec, last proposal, transcript).
+- `research.py` — `company_profile` (yfinance facts, cached) + `industry_brief`
+  (deterministic supply-chain layers from the graph + grounded market analysis).
+- `retrieval/graph_service.py` (cached index + merged graph), `curated.py`
+  (hand-curated supplier/customer/competitor seed edges).
+- `strategy.py` — `compile_strategy` orchestrator → Proposal (accepts a cached
+  `spec` + shared `index`/`meta` to keep conversational rebuilds fast).
 - `execution/` — `planner.py` (diff engine), `executor.py`.
 - `scheduler.py` — autonomous `rebalance_once` + `RebalanceScheduler`.
 - `persistence/repo.py` — DuckDB StateRepo (proposals, portfolio, audit).
-- `api/app.py` — FastAPI (`create_app` DI). `web/` — Next.js 16 + recharts.
+- `api/app.py` — FastAPI (`create_app` DI). Endpoints: `/api/chat` (main loop),
+  `/api/graph/{search,neighbors}`, `/api/stock/{sym}`, `/api/industry`,
+  `/api/compile`, `/api/proposals/*`, `/api/rebalance`, `/api/clarify`.
+  `si serve` wires the real Gemini client via `get_llm()`.
+- `web/` — Next 16 / React 19 / Tailwind v4. Layout: persistent chat + tabbed
+  workspace (Supply chain | Portfolio | Stocks | Industry). Components:
+  ChatPanel, GraphCanvas (hand-rolled SVG force layout), PortfolioPanel,
+  StocksPanel (per-stock tabs+dropdown), IndustryPanel, plus the recharts
+  Allocation/Frontier charts and Findings.
 
 ## Key decisions & gotchas
 - **We are the agent HOST, not the MCP server** (Robinhood publishes the MCP;
