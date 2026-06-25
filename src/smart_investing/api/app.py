@@ -16,14 +16,22 @@ from smart_investing.broker.paper import PaperBroker
 from smart_investing.data.store import Store
 from smart_investing.domain.types import Proposal
 from smart_investing.execution.executor import execute_proposal
+from smart_investing.llm.agent import interpret as interpret_message
 from smart_investing.llm.clarify import clarify as clarify_prompt
 from smart_investing.persistence.repo import StateRepo
 from smart_investing.retrieval.graph_service import GraphService
+from smart_investing.session import Session, SessionManager
 from smart_investing.strategy import compile_strategy
 
 
 class ClarifyRequest(BaseModel):
     prompt: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
+    live: bool = True
 
 
 class CompileRequest(BaseModel):
@@ -38,6 +46,71 @@ class CompileRequest(BaseModel):
     top_k: int | None = None
 
 
+_KNOB_OPS = {"set_risk": "risk", "set_breadth": "breadth", "set_supply_chain": "supply_chain"}
+_REBUILD_OPS = {"set_theme", "add", "remove", "expand", "set_lookback", "set_cash", *_KNOB_OPS}
+_EXPAND_LIMIT = 4
+
+
+def _apply_actions(session: Session, actions: list[dict], graph: GraphService) -> dict:
+    """Mutate the session from interpreted actions. Returns a summary of changes."""
+    added: list[str] = []
+    removed: list[str] = []
+    changed: list[str] = []
+    for a in actions:
+        op = a.get("op")
+        if op == "set_theme" and a.get("value"):
+            session.theme = str(a["value"]).strip()
+            changed.append("theme")
+        elif op == "add" and a.get("symbols"):
+            added += session.pin([str(s) for s in a["symbols"]])
+        elif op == "remove" and a.get("symbols"):
+            removed += session.exclude([str(s) for s in a["symbols"]])
+        elif op == "expand" and a.get("symbol"):
+            direction = a.get("direction") or "all"
+            nbrs = graph.neighbors(str(a["symbol"]).upper(), theme=session.theme, limit=_EXPAND_LIMIT * 3)
+            picks = [n["symbol"] for n in nbrs if direction == "all" or n["direction"] == direction][:_EXPAND_LIMIT]
+            added += session.pin(picks)
+        elif op in _KNOB_OPS and a.get("value"):
+            session.answers[_KNOB_OPS[op]] = str(a["value"])
+            changed.append(_KNOB_OPS[op])
+        elif op == "set_lookback" and a.get("value"):
+            session.lookback = str(a["value"])
+            changed.append("lookback")
+        elif op == "set_cash" and a.get("value"):
+            try:
+                session.cash = float(a["value"])
+                changed.append("cash")
+            except (TypeError, ValueError):
+                pass
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def _template_reply(changes: dict, proposal: Proposal | None) -> str:
+    """Fallback reply when the LLM didn't supply one — grounded in what changed."""
+    bits: list[str] = []
+    if changes["added"]:
+        bits.append("added " + ", ".join(changes["added"]))
+    if changes["removed"]:
+        bits.append("dropped " + ", ".join(changes["removed"]))
+    if "risk" in changes["changed"]:
+        bits.append("retuned the risk")
+    if "breadth" in changes["changed"]:
+        bits.append("adjusted the spread")
+    if "lookback" in changes["changed"]:
+        bits.append("changed the look-back window")
+    if "theme" in changes["changed"]:
+        bits.append("updated the thesis")
+    lead = ("I " + ", ".join(bits) + ". ") if bits else ""
+    if proposal is not None:
+        held = sum(1 for w in proposal.target_weights.values() if w > 0.005)
+        o = proposal.optimization
+        return (
+            f"{lead}Rebuilt: {held} holdings, ~{o.expected_return * 100:.1f}% return at "
+            f"~{o.volatility * 100:.1f}% risk (Sharpe {o.sharpe:.2f})."
+        )
+    return lead or "Got it — tell me how you'd like to shape the portfolio."
+
+
 def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, default_cash: float = 10_000.0) -> FastAPI:
     app = FastAPI(title="smart-investing API", version="0.1.0")
     app.add_middleware(
@@ -47,6 +120,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         allow_headers=["*"],
     )
     state = {"store": store, "repo": repo, "broker": broker, "llm": llm, "embedder": embedder, "graph": None}
+    sessions = SessionManager()
 
     def get_store() -> Store:
         if state["store"] is None:
@@ -95,6 +169,65 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         g = get_graph()
         node = node.upper()
         return {"node": g.node_view(node, theme), "neighbors": g.neighbors(node, theme=theme, limit=limit)}
+
+    def _holdings_context(session: Session) -> list[dict]:
+        p = session.proposal
+        if p is None:
+            return []
+        return [
+            {"symbol": a.symbol, "name": a.name, "weight": p.target_weights.get(a.symbol, 0.0)}
+            for a in p.universe.assets
+            if p.target_weights.get(a.symbol, 0.0) > 0.005
+        ]
+
+    @app.post("/api/chat")
+    def chat(req: ChatRequest) -> dict:
+        """The conversation loop: interpret freeform feedback -> apply -> rebuild -> reply.
+
+        First message is the thesis. Subsequent messages refine it ("go deeper on
+        NVDA", "make it safer", "drop the consumer names", "why MU?")."""
+        session = sessions.get_or_create(req.session_id)
+        session.messages.append({"role": "user", "text": req.message})
+
+        context = {**session.snapshot(), "holdings": _holdings_context(session)}
+        result = interpret_message(req.message, context, state["llm"])
+        actions = result["actions"]
+
+        first_turn = not session.theme
+        # On the opening turn the message itself is the thesis unless the LLM set one.
+        if first_turn and not any(a.get("op") == "set_theme" for a in actions):
+            session.theme = req.message.strip()
+
+        changes = _apply_actions(session, actions, get_graph())
+        needs_rebuild = first_turn or any(a.get("op") in _REBUILD_OPS for a in actions)
+
+        if needs_rebuild and session.theme:
+            proposal = compile_strategy(
+                session.theme,
+                get_store(),
+                live=req.live,
+                initial_cash=session.cash,
+                account=get_broker().get_account_state(),
+                llm=state["llm"],
+                embedder=state["embedder"],
+                answers=session.compile_answers(),
+                lookback=session.lookback,
+            )
+            get_repo().save_proposal(proposal)
+            session.proposal = proposal
+
+        reply = result.get("reply") or _template_reply(changes, session.proposal)
+        session.messages.append({"role": "assistant", "text": reply})
+        return {
+            "session_id": session.id,
+            "reply": reply,
+            "actions": actions,
+            "added": changes["added"],
+            "removed": changes["removed"],
+            "rebuilt": needs_rebuild and bool(session.theme),
+            "proposal": session.proposal,
+            "state": session.snapshot(),
+        }
 
     @app.post("/api/compile")
     def compile_(req: CompileRequest) -> Proposal:

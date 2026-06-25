@@ -73,6 +73,10 @@ def _apply_answers(spec: StrategySpec, answers: dict | None) -> StrategySpec:
 
     extra_excludes = answers.get("exclude_symbols") or []
     excludes = list({*spec.exclude_symbols, *(str(s).upper() for s in extra_excludes)})
+    extra_includes = answers.get("include_symbols") or []
+    includes = list({*spec.include_symbols, *(str(s).upper() for s in extra_includes)})
+    # a symbol can't be both pinned and excluded — exclusion wins (the user removed it)
+    includes = [s for s in includes if s not in set(excludes)]
 
     return spec.model_copy(
         update={
@@ -80,6 +84,7 @@ def _apply_answers(spec: StrategySpec, answers: dict | None) -> StrategySpec:
             "objective": objective,
             "include_indirect": include_indirect,
             "exclude_symbols": excludes,
+            "include_symbols": includes,
         }
     )
 
