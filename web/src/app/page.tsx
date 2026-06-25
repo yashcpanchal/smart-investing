@@ -3,10 +3,20 @@
 import { useState } from "react";
 import { ChatPanel, type Msg } from "../components/ChatPanel";
 import { GraphCanvas } from "../components/GraphCanvas";
+import { IndustryPanel } from "../components/IndustryPanel";
 import { PortfolioPanel } from "../components/PortfolioPanel";
+import { StocksPanel } from "../components/StocksPanel";
 import { api, type ChatState, type Proposal } from "../lib/api";
 
-type Tab = "chat" | "map" | "portfolio";
+type View = "map" | "portfolio" | "stocks" | "industry";
+type Tab = "chat" | View;
+
+const VIEWS: { id: View; label: string }[] = [
+  { id: "map", label: "Supply chain" },
+  { id: "portfolio", label: "Portfolio" },
+  { id: "stocks", label: "Stocks" },
+  { id: "industry", label: "Industry" },
+];
 
 export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -16,6 +26,7 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
+  const [visited, setVisited] = useState<Set<View>>(new Set(["map", "portfolio"]));
 
   async function send(text: string) {
     setMessages((m) => [...m, { role: "user", text }]);
@@ -27,7 +38,7 @@ export default function Home() {
       setChatState(r.state);
       if (r.proposal) {
         setProposal(r.proposal);
-        if (tab === "chat") setTab("map"); // surface the map once something is built
+        if (tab === "chat") goto("map");
       }
       setMessages((m) => [...m, { role: "assistant", text: r.reply }]);
     } catch (e) {
@@ -36,6 +47,11 @@ export default function Home() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function goto(v: View) {
+    setTab(v);
+    setVisited((s) => (s.has(v) ? s : new Set(s).add(v)));
   }
 
   const addToPortfolio = (s: string) => send(`Add ${s} to the portfolio`);
@@ -48,11 +64,14 @@ export default function Home() {
     setChatState(null);
     setError(null);
     setTab("chat");
+    setVisited(new Set(["map", "portfolio"]));
   }
 
   const started = messages.length > 0;
   const theme = chatState?.search_theme || chatState?.theme || "";
   const pinned = chatState?.pinned ?? [];
+  const holdings = proposal?.explanation?.holdings ?? [];
+  const view: View = tab === "chat" ? "map" : tab; // desktop workspace always shows a view
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950">
@@ -83,36 +102,70 @@ export default function Home() {
         </div>
       )}
 
-      {/* mobile tab switcher */}
-      <div className="flex shrink-0 border-b border-zinc-800 lg:hidden">
-        {(["chat", "map", "portfolio"] as Tab[]).map((t) => (
+      {/* mobile tab switcher (incl. chat) */}
+      <div className="flex shrink-0 overflow-x-auto border-b border-zinc-800 lg:hidden">
+        {(["chat", ...VIEWS.map((v) => v.id)] as Tab[]).map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
-            className={`flex-1 py-2 text-xs font-medium capitalize transition ${
+            onClick={() => (t === "chat" ? setTab("chat") : goto(t))}
+            className={`shrink-0 px-3.5 py-2 text-xs font-medium capitalize transition ${
               tab === t ? "border-b-2 border-cyan-400 text-cyan-300" : "text-zinc-500"
             }`}
           >
-            {t}
+            {t === "chat" ? "Chat" : VIEWS.find((v) => v.id === t)?.label}
           </button>
         ))}
       </div>
 
-      <main className="grid min-h-0 flex-1 lg:grid-cols-[minmax(300px,0.85fr)_1.5fr_minmax(330px,1fr)]">
+      <main className="grid min-h-0 flex-1 lg:grid-cols-[360px_1fr]">
+        {/* chat — persistent on desktop */}
         <section className={`${tab === "chat" ? "flex" : "hidden"} min-h-0 flex-col border-zinc-800 lg:flex lg:border-r`}>
           <ChatPanel messages={messages} onSend={send} busy={busy} started={started} />
         </section>
 
-        <section className={`${tab === "map" ? "block" : "hidden"} min-h-0 border-zinc-800 lg:block lg:border-r`}>
-          <GraphCanvas theme={theme} pinned={pinned} onAdd={addToPortfolio} onRemove={removeFromPortfolio} busy={busy} />
-        </section>
+        {/* workspace */}
+        <section className={`${tab === "chat" ? "hidden" : "flex"} min-h-0 flex-col lg:flex`}>
+          {/* desktop view tabs */}
+          <div className="hidden shrink-0 gap-1 border-b border-zinc-800 px-3 py-2 lg:flex">
+            {VIEWS.map((v) => (
+              <button
+                key={v.id}
+                onClick={() => goto(v.id)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  view === v.id ? "bg-cyan-500/15 text-cyan-300" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
 
-        <section className={`${tab === "portfolio" ? "block" : "hidden"} min-h-0 lg:block`}>
-          <PortfolioPanel proposal={proposal} busy={busy} onRemove={removeFromPortfolio} />
+          <div className="relative min-h-0 flex-1">
+            <Pane show={view === "map"}>
+              <GraphCanvas theme={theme} pinned={pinned} onAdd={addToPortfolio} onRemove={removeFromPortfolio} busy={busy} />
+            </Pane>
+            <Pane show={view === "portfolio"}>
+              <PortfolioPanel proposal={proposal} busy={busy} onRemove={removeFromPortfolio} />
+            </Pane>
+            {visited.has("stocks") && (
+              <Pane show={view === "stocks"}>
+                <StocksPanel holdings={holdings} theme={theme} />
+              </Pane>
+            )}
+            {visited.has("industry") && (
+              <Pane show={view === "industry"}>
+                <IndustryPanel theme={theme} />
+              </Pane>
+            )}
+          </div>
         </section>
       </main>
     </div>
   );
+}
+
+function Pane({ show, children }: { show: boolean; children: React.ReactNode }) {
+  return <div className={`absolute inset-0 ${show ? "block" : "hidden"}`}>{children}</div>;
 }
 
 function Pill({ children }: { children: React.ReactNode }) {

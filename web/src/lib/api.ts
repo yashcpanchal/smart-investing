@@ -151,6 +151,38 @@ export interface ChatResponse {
   state: ChatState;
 }
 
+// ---- per-stock detail ----
+export interface StockMetric {
+  label: string;
+  value: string;
+}
+export interface StockDetail {
+  symbol: string;
+  name: string;
+  sector: string;
+  industry: string;
+  summary: string;
+  metrics: StockMetric[];
+  theme_fit: string;
+  must_knows: string[];
+}
+
+// ---- industry briefing ----
+export interface SupplyLayer {
+  layer: string;
+  players: { symbol: string; name: string }[];
+}
+export interface IndustryBrief {
+  theme: string;
+  supply_chain: SupplyLayer[];
+  analysis: string;
+  tailwinds: string[];
+  risks: string[];
+  outlook: string;
+  sources: { title: string; uri: string }[];
+  grounded: boolean;
+}
+
 export interface ApproveResult {
   proposal_id: string;
   filled: number;
@@ -193,6 +225,9 @@ export const api = {
     jget<NeighborsResponse>(
       `/api/graph/neighbors?node=${encodeURIComponent(node)}&theme=${encodeURIComponent(theme)}&limit=${limit}`,
     ),
+  stock: (symbol: string, theme = "") =>
+    jget<StockDetail>(`/api/stock/${encodeURIComponent(symbol)}?theme=${encodeURIComponent(theme)}`),
+  industry: (theme: string) => jget<IndustryBrief>(`/api/industry?theme=${encodeURIComponent(theme)}`),
   approve: (id: string) => jpost<ApproveResult>(`/api/proposals/${id}/approve`),
   portfolio: () => jget<unknown>("/api/portfolio"),
   health: () => jget<{ status: string; corpus_docs: number }>("/health"),
