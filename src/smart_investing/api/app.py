@@ -16,15 +16,25 @@ from smart_investing.broker.paper import PaperBroker
 from smart_investing.data.store import Store
 from smart_investing.domain.types import Proposal
 from smart_investing.execution.executor import execute_proposal
+from smart_investing.llm.clarify import clarify as clarify_prompt
 from smart_investing.persistence.repo import StateRepo
 from smart_investing.strategy import compile_strategy
+
+
+class ClarifyRequest(BaseModel):
+    prompt: str
 
 
 class CompileRequest(BaseModel):
     prompt: str
     initial_cash: float = 10_000.0
-    top_k: int = 12
     live: bool = True
+    # Conversational follow-up answers (risk / breadth / supply_chain / ...).
+    answers: dict | None = None
+    # Price-history window used for risk + backtest ("1y" | "2y" | "3y" | "5y").
+    lookback: str = "2y"
+    # Optional retrieval breadth override; normally WE decide holding count.
+    top_k: int | None = None
 
 
 def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, default_cash: float = 10_000.0) -> FastAPI:
@@ -60,6 +70,12 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
     def health() -> dict:
         return {"status": "ok", "corpus_docs": get_store().count("documents")}
 
+    @app.post("/api/clarify")
+    def clarify_(req: ClarifyRequest) -> dict:
+        """Conversational step: restate the thesis and return tailored follow-up
+        questions BEFORE building anything."""
+        return clarify_prompt(req.prompt, llm=state["llm"])
+
     @app.post("/api/compile")
     def compile_(req: CompileRequest) -> Proposal:
         proposal = compile_strategy(
@@ -71,6 +87,8 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             account=get_broker().get_account_state(),
             llm=state["llm"],
             embedder=state["embedder"],
+            answers=req.answers,
+            lookback=req.lookback,
         )
         get_repo().save_proposal(proposal)
         return proposal
@@ -132,6 +150,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             account=get_broker().get_account_state(),
             llm=state["llm"],
             embedder=state["embedder"],
+            lookback=p.lookback,
         )
         get_repo().save_proposal(new)
         get_repo().audit("rebalance", f"{pid}->{new.id}")

@@ -21,6 +21,22 @@ export interface Trade {
   est_price: number | null;
 }
 
+export interface Explanation {
+  summary: string;
+  understood: string;
+  selection: string;
+  construction: string;
+  risk_note: string;
+  data_note: string;
+  highlights: string[];
+}
+
+export interface Violation {
+  code: string;
+  message: string;
+  severity: string;
+}
+
 export interface Proposal {
   id: string;
   spec: {
@@ -49,6 +65,30 @@ export interface Proposal {
     max_drawdown: number;
   } | null;
   rationale: string;
+  explanation: Explanation | null;
+  blocked: boolean;
+  violations: Violation[];
+  lookback: string;
+  price_source: string;
+}
+
+export interface ClarifyOption {
+  label: string;
+  value: string;
+  hint?: string;
+}
+export interface ClarifyQuestion {
+  id: string;
+  question: string;
+  help: string;
+  kind: "single" | "multi";
+  default?: string;
+  options: ClarifyOption[];
+}
+export interface ClarifyResponse {
+  interpretation: string;
+  focus: string;
+  questions: ClarifyQuestion[];
 }
 
 export interface ApproveResult {
@@ -57,6 +97,12 @@ export interface ApproveResult {
   rejected: number;
   realized_pnl: number;
   account: { cash: number; positions: Record<string, { symbol: string; quantity: number; avg_cost: number }> };
+}
+
+export interface CompileOpts {
+  initial_cash?: number;
+  answers?: Record<string, string | string[]>;
+  lookback?: string;
 }
 
 async function jpost<T>(path: string, body?: unknown): Promise<T> {
@@ -76,7 +122,8 @@ async function jget<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  compile: (prompt: string, opts: { initial_cash?: number; top_k?: number; live?: boolean } = {}) =>
+  clarify: (prompt: string) => jpost<ClarifyResponse>("/api/clarify", { prompt }),
+  compile: (prompt: string, opts: CompileOpts = {}) =>
     jpost<Proposal>("/api/compile", { prompt, live: true, ...opts }),
   approve: (id: string) => jpost<ApproveResult>(`/api/proposals/${id}/approve`),
   portfolio: () => jget<unknown>("/api/portfolio"),
@@ -85,4 +132,6 @@ export const api = {
 
 export const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 export const money = (x: number) =>
+  x.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+export const money2 = (x: number) =>
   x.toLocaleString("en-US", { style: "currency", currency: "USD" });

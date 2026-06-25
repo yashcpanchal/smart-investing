@@ -69,3 +69,30 @@ def test_rebalance_returns_new_proposal():
     r = c.post(f"/api/rebalance/{pid}")
     assert r.status_code == 200
     assert r.json()["id"] != pid
+
+
+def test_clarify_endpoint_returns_questions():
+    r = _client().post("/api/clarify", json={"prompt": "nuclear energy and uranium, lower risk"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["interpretation"]
+    assert {q["id"] for q in body["questions"]} == {"risk", "breadth", "supply_chain", "lookback"}
+
+
+def test_compile_with_answers_returns_explanation_and_honors_lookback():
+    c = _client()
+    r = c.post(
+        "/api/compile",
+        json={
+            "prompt": "quantum computing",
+            "live": False,
+            "answers": {"risk": "low", "supply_chain": "no"},
+            "lookback": "1y",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["explanation"] is not None
+    assert body["explanation"]["highlights"]
+    assert body["lookback"] == "1y"
+    assert body["spec"]["objective"] == "target_vol"  # low-risk answer applied

@@ -236,6 +236,23 @@ class ValidationResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Explanation (plain-English "explain our findings", grounded in real numbers)
+# --------------------------------------------------------------------------- #
+class Explanation(BaseModel):
+    """Human-readable account of what we did and why. Every numeric claim is
+    filled from the actual pipeline outputs (never the LLM) so it can't drift;
+    the LLM only polishes the one-line `summary`."""
+
+    summary: str = ""  # 1-2 sentence plain-English headline
+    understood: str = ""  # what we read from the thesis
+    selection: str = ""  # why these names (direct vs supply-chain)
+    construction: str = ""  # how the weights were chosen (the math, in words)
+    risk_note: str = ""  # guardrails / circuit breaker / concentration
+    data_note: str = ""  # data window + source
+    highlights: list[str] = Field(default_factory=list)  # quick key-findings bullets
+
+
+# --------------------------------------------------------------------------- #
 # Proposal (what we show the user before executing)
 # --------------------------------------------------------------------------- #
 class Proposal(BaseModel):
@@ -247,4 +264,9 @@ class Proposal(BaseModel):
     trades: list[Order] = Field(default_factory=list)
     backtest: BacktestResult | None = None
     rationale: str = ""
+    explanation: Explanation | None = None
+    blocked: bool = False  # circuit breaker blocked execution
+    violations: list[Violation] = Field(default_factory=list)
+    lookback: str = "2y"  # analysis window used for prices/backtest
+    price_source: str = ""  # "yfinance (live)" | "synthetic (offline)"
     generated_at: str = Field(default_factory=_utcnow_iso)
