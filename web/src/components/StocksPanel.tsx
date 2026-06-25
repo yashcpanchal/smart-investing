@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, pct, type HoldingExplanation, type StockDetail } from "../lib/api";
 
 export function StocksPanel({
@@ -12,7 +12,6 @@ export function StocksPanel({
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, StockDetail | "loading" | "error">>({});
-  const requested = useRef<Set<string>>(new Set()); // keys we've already fetched (read only in effects)
 
   // derive the selected tab (defaults to the top holding) — no setState-in-effect
   const active = picked && holdings.some((h) => h.symbol === picked) ? picked : holdings[0]?.symbol ?? null;
@@ -20,15 +19,15 @@ export function StocksPanel({
 
   useEffect(() => {
     if (!active) return;
-    const key = `${active}|${theme}`;
-    if (requested.current.has(key)) return;
-    requested.current.add(key);
     let cancelled = false;
     const sym = active;
+    const th = theme;
     async function load() {
-      setDetails((d) => ({ ...d, [sym]: "loading" }));
+      // mark loading unless we already have a final result (StrictMode-safe:
+      // the second mount re-runs and completes even if the first was cancelled)
+      setDetails((d) => (d[sym] && d[sym] !== "loading" ? d : { ...d, [sym]: "loading" }));
       try {
-        const s = await api.stock(sym, theme);
+        const s = await api.stock(sym, th);
         if (!cancelled) setDetails((d) => ({ ...d, [sym]: s }));
       } catch {
         if (!cancelled) setDetails((d) => ({ ...d, [sym]: "error" }));
