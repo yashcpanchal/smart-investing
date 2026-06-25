@@ -8,8 +8,38 @@ here, never the source of tickers (that's the retrieval engine's job).
 
 from __future__ import annotations
 
+import re
+
 from smart_investing.domain.types import Objective, RiskParams, StrategySpec
 from smart_investing.llm.gemini import GeminiClient, get_llm
+
+# Strip conversational lead-ins and risk/breadth qualifiers so the no-LLM theme
+# is a tight search phrase. A verbose query ("I want to invest in X, lower risk")
+# flattens embedding similarities and lets off-theme names past the relevance gate.
+_LEADIN = re.compile(
+    r"^\s*(i\s+(want|wanna|would\s+like|'?d\s+like|wish)\s+(to\s+)?)?"
+    r"(invest\s+in|put\s+money\s+in(to)?|get\s+exposure\s+to|exposure\s+to|buy|"
+    r"build(\s+me)?(\s+a)?(\s+portfolio(\s+of|\s+around)?)?|create(\s+a)?(\s+portfolio(\s+of|\s+around)?)?|"
+    r"a\s+portfolio\s+(of|around)|focus\s+on)\s+",
+    re.I,
+)
+_QUALIFIER = re.compile(
+    r"\b(lower\s+risk|low\s+risk|less\s+risk|reduce\s+risk|high\s+risk|aggressive|"
+    r"conservative|safe(r)?|stable|low\s+volatility|diversif\w*|spread\s+out|"
+    r"well[\s-]spread|broadly?|balanced|high[\s-]conviction|focus(ed|sed)?)\b",
+    re.I,
+)
+
+
+def _clean_theme(prompt: str) -> str:
+    """Best-effort tight theme phrase for retrieval (no-LLM path)."""
+    t = _LEADIN.sub("", prompt.strip())
+    # drop trailing/leading qualifier-only clauses, then any inline qualifier words
+    parts = [c.strip() for c in re.split(r"[,;.]", t)]
+    kept = [c for c in parts if c and not _QUALIFIER.fullmatch(c.strip())]
+    cleaned = _QUALIFIER.sub("", ", ".join(kept) if kept else t)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.&-")
+    return cleaned or prompt.strip()
 
 _SYSTEM = (
     "You are a financial strategy parser. Convert a retail investor's natural-language "
@@ -43,7 +73,7 @@ def _fallback_spec(prompt: str) -> StrategySpec:
     include_indirect = not any(w in p for w in ("only direct", "no supply chain", "pure play", "pure-play"))
     return StrategySpec(
         raw_prompt=prompt,
-        themes=[prompt],
+        themes=[_clean_theme(prompt)],
         objective=objective,
         include_indirect=include_indirect,
         risk=RiskParams(concentration_cap=cap, target_volatility=target_vol),

@@ -111,10 +111,19 @@ def compile_strategy(
     account: AccountState | None = None,
     answers: dict | None = None,
     lookback: str = "2y",
+    spec: StrategySpec | None = None,
+    index=None,
+    meta: dict | None = None,
 ) -> Proposal:
-    spec = _apply_answers(compile_spec(prompt, llm=llm), answers)
+    # Reuse a precompiled base spec (cached per conversation) to skip the LLM
+    # theme-parse on every refine turn; only compile fresh when none is supplied.
+    base = spec if spec is not None else compile_spec(prompt, llm=llm)
+    spec = _apply_answers(base, answers)
     k = top_k if top_k is not None else _holdings_for(answers)
-    universe = build_universe(prompt, store, spec, top_k=k, embedder=embedder, min_relevance=0.12)
+    # index/meta: a shared, cached corpus index (avoids re-embedding every filing per call)
+    universe = build_universe(
+        prompt, store, spec, top_k=k, embedder=embedder, min_relevance=0.12, index=index, meta=meta
+    )
 
     px, source = _prices_for(universe.symbols, live=live, lookback=lookback)
     priced = list(px.columns)

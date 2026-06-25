@@ -88,6 +88,12 @@ class GraphService:
         if not self._built:
             self.build()
 
+    def retrieval(self) -> tuple[RetrievalIndex, dict]:
+        """The cached corpus index + {titles, texts}, for reuse by the optimizer
+        pipeline so it doesn't re-embed every filing on each rebuild."""
+        self._ensure()
+        return self.index, {"titles": self.titles, "texts": self.texts}
+
     # -------------------------------------------------------------- relevance
     def relevance(self, theme: str) -> dict[str, float]:
         """{ticker: cosine to theme}, 0..1-ish, cached per theme string."""

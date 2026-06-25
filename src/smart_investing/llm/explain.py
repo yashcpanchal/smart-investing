@@ -37,23 +37,20 @@ def _pct(x: float) -> str:
     return f"{x * 100:.1f}%"
 
 
-def _build_holdings(
-    universe: AssetUniverse, held: dict[str, float], spec: StrategySpec, llm: GeminiClient | None
-) -> list[HoldingExplanation]:
-    """Per-name reasoning, grounded in the real weights. The optional LLM call
-    only writes a qualitative `why` (no numbers), so nothing can drift."""
+def _build_holdings(universe: AssetUniverse, held: dict[str, float]) -> list[HoldingExplanation]:
+    """Per-name rows with deterministic weight/role/relevance and a templated
+    `why`; the LLM later overwrites `why` with a qualitative reason (one call)."""
     by_symbol = {a.symbol: a for a in universe.assets}
     rows: list[HoldingExplanation] = []
     for sym, w in sorted(held.items(), key=lambda kv: -kv[1]):
         a = by_symbol.get(sym)
         direct = (a.degree == 1) if a else True
-        rel = 0.0
-        if a:
-            rel = a.scores.get("relevance", a.scores.get("graph_proximity", 0.0))
-        if direct:
-            why = f"Direct match to the thesis (relevance {rel * 100:.0f}%)."
-        else:
-            why = f"Supply-chain exposure surfaced from filings — {a.rationale if a else 'indirect link'}."
+        rel = a.scores.get("relevance", a.scores.get("graph_proximity", 0.0)) if a else 0.0
+        why = (
+            f"Direct match to the thesis (relevance {rel * 100:.0f}%)."
+            if direct
+            else f"Supply-chain exposure surfaced from filings — {a.rationale if a else 'indirect link'}."
+        )
         rows.append(
             HoldingExplanation(
                 symbol=sym,
@@ -64,25 +61,6 @@ def _build_holdings(
                 why=why,
             )
         )
-
-    if llm is not None and getattr(llm, "available", False) and rows:
-        theme = ", ".join(spec.themes) or "the thesis"
-        names = [{"symbol": r.symbol, "name": r.name, "role": r.role} for r in rows]
-        prompt = (
-            f"Theme: {theme}. For each company, write a concrete <=16-word reason it fits the theme "
-            "(what it does / where it sits in the chain). No numbers, no hype. "
-            'Return JSON {"reasons": {"TICKER": "..."}}.\n'
-            f"COMPANIES: {names}"
-        )
-        try:
-            data = llm.complete_json(prompt, system=_SYSTEM)
-            reasons = data.get("reasons") or {}
-            for r in rows:
-                txt = str(reasons.get(r.symbol) or "").strip()
-                if txt:
-                    r.why = txt
-        except Exception:
-            pass
     return rows
 
 
@@ -184,21 +162,27 @@ def build_explanation(
         ("Circuit breaker: PASS" if validation.ok else f"Circuit breaker: BLOCKED ({len(validation.fatal)} fatal)"),
     ]
 
+    holdings = _build_holdings(universe, held)
+
+    # ONE LLM call writes both the warm summary and a per-name qualitative `why`
+    # (no numbers, so nothing can drift). Keeps each conversational turn fast.
     summary = _summary_fallback(spec, opt, n_held)
     if llm is not None and getattr(llm, "available", False):
+        theme = ", ".join(spec.themes) or "the thesis"
         facts = {
-            "themes": spec.themes,
-            "objective": spec.objective.value,
+            "theme": theme,
             "holdings": n_held,
-            "top_positions": [{"symbol": s, "weight": round(w, 4)} for s, w in top],
             "expected_return": round(opt.expected_return, 4),
             "volatility": round(opt.volatility, 4),
             "sharpe": round(opt.sharpe, 3),
             "blocked": not validation.ok,
+            "companies": [{"symbol": h.symbol, "name": h.name, "role": h.role} for h in holdings],
         }
         prompt = (
-            "Write a warm 1-2 sentence summary (<=45 words) of this portfolio for the user, "
-            "using ONLY these facts. Return JSON {\"summary\": \"...\"}.\n"
+            "You built this portfolio. Using ONLY these facts, return JSON with:\n"
+            '  "summary": a warm 1-2 sentence headline (<=45 words), and\n'
+            '  "reasons": a map {TICKER: "<=16-word concrete reason it fits the theme — what it '
+            "does / where it sits in the supply chain, no numbers, no hype\"}.\n"
             f"FACTS: {facts}"
         )
         try:
@@ -206,10 +190,13 @@ def build_explanation(
             s = str(data.get("summary") or "").strip()
             if s:
                 summary = s
+            reasons = data.get("reasons") or {}
+            for h in holdings:
+                txt = str(reasons.get(h.symbol) or "").strip()
+                if txt:
+                    h.why = txt
         except Exception:
             pass
-
-    holdings = _build_holdings(universe, held, spec, llm)
 
     return Explanation(
         summary=summary,

@@ -18,6 +18,8 @@ from smart_investing.domain.types import Proposal
 from smart_investing.execution.executor import execute_proposal
 from smart_investing.llm.agent import interpret as interpret_message
 from smart_investing.llm.clarify import clarify as clarify_prompt
+from smart_investing.llm.compiler import compile_spec
+from smart_investing.llm.gemini import get_llm
 from smart_investing.persistence.repo import StateRepo
 from smart_investing.retrieval.graph_service import GraphService
 from smart_investing.session import Session, SessionManager
@@ -189,19 +191,29 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         session = sessions.get_or_create(req.session_id)
         session.messages.append({"role": "user", "text": req.message})
 
-        context = {**session.snapshot(), "holdings": _holdings_context(session)}
-        result = interpret_message(req.message, context, state["llm"])
-        actions = result["actions"]
-
         first_turn = not session.theme
-        # On the opening turn the message itself is the thesis unless the LLM set one.
-        if first_turn and not any(a.get("op") == "set_theme" for a in actions):
+        # First turn: the message IS the thesis — no need to spend an LLM call
+        # interpreting refine-intent. Later turns: interpret freeform feedback.
+        if first_turn:
             session.theme = req.message.strip()
+            result: dict = {"actions": [], "reply": ""}
+            actions: list[dict] = []
+        else:
+            context = {**session.snapshot(), "holdings": _holdings_context(session)}
+            result = interpret_message(req.message, context, state["llm"])
+            actions = result["actions"]
+            if any(a.get("op") == "set_theme" and a.get("value") for a in actions):
+                session.base_spec = None  # theme changed -> re-parse on rebuild
 
         changes = _apply_actions(session, actions, get_graph())
         needs_rebuild = first_turn or any(a.get("op") in _REBUILD_OPS for a in actions)
 
         if needs_rebuild and session.theme:
+            # Parse the thesis with the LLM ONCE per conversation; reuse the cached
+            # base spec across refine turns (answers/pins are layered on each rebuild).
+            if session.base_spec is None:
+                session.base_spec = compile_spec(session.theme, llm=state["llm"])
+            idx, meta = get_graph().retrieval()
             proposal = compile_strategy(
                 session.theme,
                 get_store(),
@@ -212,9 +224,15 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
                 embedder=state["embedder"],
                 answers=session.compile_answers(),
                 lookback=session.lookback,
+                spec=session.base_spec,
+                index=idx,
+                meta=meta,
             )
             get_repo().save_proposal(proposal)
             session.proposal = proposal
+            # use the clean extracted themes for graph search (sharper than the raw message)
+            if proposal.spec.themes:
+                session.search_theme = " ".join(proposal.spec.themes)
 
         reply = result.get("reply") or _template_reply(changes, session.proposal)
         session.messages.append({"role": "assistant", "text": reply})
@@ -231,6 +249,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
 
     @app.post("/api/compile")
     def compile_(req: CompileRequest) -> Proposal:
+        idx, meta = get_graph().retrieval()
         proposal = compile_strategy(
             req.prompt,
             get_store(),
@@ -242,6 +261,8 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             embedder=state["embedder"],
             answers=req.answers,
             lookback=req.lookback,
+            index=idx,
+            meta=meta,
         )
         get_repo().save_proposal(proposal)
         return proposal
@@ -297,6 +318,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         p = get_repo().get_proposal(pid)
         if not p:
             raise HTTPException(404, "proposal not found")
+        idx, meta = get_graph().retrieval()
         new = compile_strategy(
             p.spec.raw_prompt,
             get_store(),
@@ -304,6 +326,8 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             llm=state["llm"],
             embedder=state["embedder"],
             lookback=p.lookback,
+            index=idx,
+            meta=meta,
         )
         get_repo().save_proposal(new)
         get_repo().audit("rebalance", f"{pid}->{new.id}")
@@ -316,4 +340,6 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
     return app
 
 
-app = create_app()
+# The `si serve` entrypoint. Auto-wire the configured Gemini client (None-safe:
+# get_llm() returns None when no key is set, keeping the deterministic fallback).
+app = create_app(llm=get_llm())

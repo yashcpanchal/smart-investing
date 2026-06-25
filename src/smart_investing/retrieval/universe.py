@@ -42,13 +42,24 @@ def build_universe(
     embedder=None,
     relevance_gate: float = 0.5,
     min_relevance: float = 0.0,
+    index: RetrievalIndex | None = None,
+    meta: dict | None = None,
 ) -> AssetUniverse:
     """relevance_gate: keep a direct hit only if its cosine >= gate * top cosine
     (drops bottom-half noise, embedder-agnostic). min_relevance: optional
-    absolute cosine floor for the 'everything is weak' case (set per embedder)."""
+    absolute cosine floor for the 'everything is weak' case (set per embedder).
+
+    index/meta: a prebuilt, cached retrieval index (+ {titles, texts}) to reuse.
+    Embedding the whole corpus is the slow step; passing a shared index keeps each
+    conversational rebuild fast instead of re-embedding every filing each turn."""
     spec = spec or StrategySpec(raw_prompt=prompt, themes=[prompt])
-    query = prompt or " ".join(spec.themes)
-    index, meta = build_index_from_store(store, embedder=embedder)
+    # Retrieve on the (LLM-)extracted themes, not the raw chat message. A verbose
+    # prompt ("I want to invest in quantum and its related supply chain") flattens
+    # the embedding similarities and lets off-theme names (e.g. consumer staples)
+    # slip past the relevance gate; the clean themes give a sharp on/off-theme break.
+    query = " ".join(spec.themes).strip() or prompt
+    if index is None or meta is None:
+        index, meta = build_index_from_store(store, embedder=embedder)
     titles, texts = meta["titles"], meta["texts"]
     exclude = {s.upper() for s in spec.exclude_symbols}
 

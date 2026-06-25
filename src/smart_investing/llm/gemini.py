@@ -24,7 +24,9 @@ class GeminiClient:
         # no-LLM path (used by tests and offline mode). Don't let "" leak the env key.
         self.api_key = settings.gemini_api_key if api_key is None else api_key
         self.model = model
-        self._client = httpx.Client(timeout=60.0)
+        # Short timeout: this is an interactive app. A slow/unavailable call should
+        # fall back to the deterministic path fast, not block a conversational turn.
+        self._client = httpx.Client(timeout=20.0)
 
     @property
     def available(self) -> bool:
@@ -40,24 +42,30 @@ class GeminiClient:
         url = f"{GEMINI_BASE}/models/{self.model}:generateContent"
         body: dict = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": temperature},
+            # Disable "thinking" — for our short structured prompts it only adds
+            # multi-second latency (and burns the free-tier rate limit) with no
+            # quality gain. This keeps each conversational turn snappy.
+            "generationConfig": {"temperature": temperature, "thinkingConfig": {"thinkingBudget": 0}},
         }
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
         if json_mode:
             body["generationConfig"]["responseMimeType"] = "application/json"
 
+        # Fail FAST: at most 3 attempts with short backoff (0.5s, 1s). On the free
+        # tier a sustained 429 should drop to the deterministic fallback in ~1.5s,
+        # not hang the turn for 15s+. Transient blips still get a couple of retries.
         last: httpx.Response | None = None
-        for attempt in range(5):
+        for attempt in range(3):
             try:
                 last = self._client.post(url, params={"key": self.api_key}, json=body)
             except httpx.TransportError:
-                if attempt < 4:
-                    time.sleep(min(2**attempt, 8))
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
                     continue
                 raise
-            if last.status_code in _RETRY_STATUS and attempt < 4:
-                time.sleep(min(2**attempt, 8))  # 1s,2s,4s,8s backoff on 429/5xx
+            if last.status_code in _RETRY_STATUS and attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
                 continue
             break
         assert last is not None

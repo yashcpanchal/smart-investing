@@ -11,13 +11,15 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from smart_investing.domain.types import Proposal
+from smart_investing.domain.types import Proposal, StrategySpec
 
 
 @dataclass
 class Session:
     id: str
-    theme: str = ""
+    theme: str = ""  # the user's thesis, as they phrased it (for display)
+    search_theme: str = ""  # clean extracted themes, for retrieval + graph search
+    base_spec: StrategySpec | None = None  # cached LLM theme-parse; reused across refine turns
     # tuning knobs (same vocabulary the clarify follow-ups use)
     answers: dict = field(default_factory=lambda: {"risk": "balanced", "breadth": "balanced", "supply_chain": "yes"})
     lookback: str = "2y"
@@ -57,6 +59,7 @@ class Session:
         return {
             "id": self.id,
             "theme": self.theme,
+            "search_theme": self.search_theme or self.theme,
             "risk": self.answers.get("risk"),
             "breadth": self.answers.get("breadth"),
             "supply_chain": self.answers.get("supply_chain"),
