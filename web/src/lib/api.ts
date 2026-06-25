@@ -21,6 +21,15 @@ export interface Trade {
   est_price: number | null;
 }
 
+export interface HoldingExplanation {
+  symbol: string;
+  name: string;
+  weight: number;
+  role: string; // "direct" | "supply-chain"
+  relevance: number;
+  why: string;
+}
+
 export interface Explanation {
   summary: string;
   understood: string;
@@ -29,6 +38,7 @@ export interface Explanation {
   risk_note: string;
   data_note: string;
   highlights: string[];
+  holdings: HoldingExplanation[];
 }
 
 export interface Violation {
@@ -91,6 +101,56 @@ export interface ClarifyResponse {
   questions: ClarifyQuestion[];
 }
 
+// ---- supply-chain graph ----
+export interface GraphNode {
+  symbol: string;
+  name: string;
+  tradeable: boolean;
+  relevance: number;
+}
+export interface GraphNeighbor extends GraphNode {
+  direction: "upstream" | "downstream" | "peer" | "related";
+  rel: string; // "supplies" | "competes" | "co_mention"
+  weight: number;
+  origin: string;
+}
+export interface SearchResponse {
+  theme: string;
+  nodes: GraphNode[];
+}
+export interface NeighborsResponse {
+  node: GraphNode;
+  neighbors: GraphNeighbor[];
+}
+
+// ---- conversation ----
+export interface ChatState {
+  id: string;
+  theme: string;
+  search_theme: string;
+  risk: string;
+  breadth: string;
+  supply_chain: string;
+  lookback: string;
+  cash: number;
+  pinned: string[];
+  excluded: string[];
+}
+export interface ChatAction {
+  op: string;
+  [k: string]: unknown;
+}
+export interface ChatResponse {
+  session_id: string;
+  reply: string;
+  actions: ChatAction[];
+  added: string[];
+  removed: string[];
+  rebuilt: boolean;
+  proposal: Proposal | null;
+  state: ChatState;
+}
+
 export interface ApproveResult {
   proposal_id: string;
   filled: number;
@@ -125,6 +185,14 @@ export const api = {
   clarify: (prompt: string) => jpost<ClarifyResponse>("/api/clarify", { prompt }),
   compile: (prompt: string, opts: CompileOpts = {}) =>
     jpost<Proposal>("/api/compile", { prompt, live: true, ...opts }),
+  chat: (message: string, session_id?: string | null) =>
+    jpost<ChatResponse>("/api/chat", { message, session_id: session_id ?? null, live: true }),
+  graphSearch: (theme: string, top_k = 8) =>
+    jget<SearchResponse>(`/api/graph/search?theme=${encodeURIComponent(theme)}&top_k=${top_k}`),
+  graphNeighbors: (node: string, theme = "", limit = 12) =>
+    jget<NeighborsResponse>(
+      `/api/graph/neighbors?node=${encodeURIComponent(node)}&theme=${encodeURIComponent(theme)}&limit=${limit}`,
+    ),
   approve: (id: string) => jpost<ApproveResult>(`/api/proposals/${id}/approve`),
   portfolio: () => jget<unknown>("/api/portfolio"),
   health: () => jget<{ status: string; corpus_docs: number }>("/health"),
