@@ -66,15 +66,17 @@ def ingest(
 
     from smart_investing.data import ingest_companies
 
+    # Avoid UnicodeEncodeError when stdout is redirected to a non-UTF-8 file on
+    # Windows (rich falls back to the console's cp1252 codec); ASCII markers are safe.
     console = Console()
     syms = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     summary, store = ingest_companies(syms)
     for t, sizes in summary["ok"]:
-        console.print(f"[green]✓[/] {t}: " + ", ".join(f"{k} {n:,}c" for k, n in sizes.items()))
+        console.print(f"[green][OK][/] {t}: " + ", ".join(f"{k} {n:,}c" for k, n in sizes.items()))
     for t, why in summary["skipped"]:
-        console.print(f"[yellow]–[/] {t}: {why}")
+        console.print(f"[yellow][--][/] {t}: {why}")
     for t, err in summary["errors"]:
-        console.print(f"[red]✗[/] {t}: {err}")
+        console.print(f"[red][XX][/] {t}: {err}")
     console.print(
         f"\nStore: {store.count('companies')} companies, "
         f"{store.count('filings')} filings, {store.count('documents')} documents"

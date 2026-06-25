@@ -18,6 +18,7 @@ from smart_investing.domain.types import Proposal
 from smart_investing.execution.executor import execute_proposal
 from smart_investing.llm.clarify import clarify as clarify_prompt
 from smart_investing.persistence.repo import StateRepo
+from smart_investing.retrieval.graph_service import GraphService
 from smart_investing.strategy import compile_strategy
 
 
@@ -45,12 +46,17 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    state = {"store": store, "repo": repo, "broker": broker, "llm": llm, "embedder": embedder}
+    state = {"store": store, "repo": repo, "broker": broker, "llm": llm, "embedder": embedder, "graph": None}
 
     def get_store() -> Store:
         if state["store"] is None:
             state["store"] = Store()
         return state["store"]
+
+    def get_graph() -> GraphService:
+        if state["graph"] is None:
+            state["graph"] = GraphService(get_store(), embedder=state["embedder"]).build()
+        return state["graph"]
 
     def get_repo() -> StateRepo:
         if state["repo"] is None:
@@ -75,6 +81,20 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         """Conversational step: restate the thesis and return tailored follow-up
         questions BEFORE building anything."""
         return clarify_prompt(req.prompt, llm=state["llm"])
+
+    @app.get("/api/graph/search")
+    def graph_search(theme: str, top_k: int = 8) -> dict:
+        """Theme -> seed nodes for the supply-chain canvas (direct matches)."""
+        g = get_graph()
+        return {"theme": theme, "nodes": g.search(theme, top_k=top_k)}
+
+    @app.get("/api/graph/neighbors")
+    def graph_neighbors(node: str, theme: str = "", limit: int = 12) -> dict:
+        """Connections of a node: upstream suppliers, downstream customers, peers.
+        This is the 'walk back to the manufacturer, and further' expansion."""
+        g = get_graph()
+        node = node.upper()
+        return {"node": g.node_view(node, theme), "neighbors": g.neighbors(node, theme=theme, limit=limit)}
 
     @app.post("/api/compile")
     def compile_(req: CompileRequest) -> Proposal:

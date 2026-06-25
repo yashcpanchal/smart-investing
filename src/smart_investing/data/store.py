@@ -38,6 +38,14 @@ create table if not exists documents (
     text varchar,
     primary key (ticker, accession, section)
 );
+create table if not exists relations (
+    src varchar,            -- supplier / upstream (for 'supplies'); either side for 'competes'
+    dst varchar,            -- customer / downstream
+    rel varchar,            -- 'supplies' | 'competes' | 'partner'
+    weight double,
+    origin varchar,         -- 'curated' | 'llm' | 'comention'
+    primary key (src, dst, rel, origin)
+);
 """
 
 
@@ -77,6 +85,18 @@ class Store:
             [ticker.upper(), cik, accession, section, text],
         )
 
+    def upsert_relation(self, src: str, dst: str, rel: str, weight: float, origin: str) -> None:
+        self.con.execute(
+            "insert or replace into relations values (?,?,?,?,?)",
+            [src.upper(), dst.upper(), rel, weight, origin],
+        )
+
+    def replace_relations(self, origin: str, edges: list[tuple[str, str, str, float]]) -> None:
+        """Atomically swap all edges of a given origin (e.g. re-running LLM extraction)."""
+        self.con.execute("delete from relations where origin = ?", [origin])
+        for src, dst, rel, weight in edges:
+            self.upsert_relation(src, dst, rel, weight, origin)
+
     # ---- reads ----
     def companies(self) -> list[tuple]:
         return self.con.execute(
@@ -89,6 +109,14 @@ class Store:
                 "select ticker, section, text from documents where section = ?", [section]
             ).fetchall()
         return self.con.execute("select ticker, section, text from documents").fetchall()
+
+    def relations(self, origin: str | None = None) -> list[tuple]:
+        """Returns (src, dst, rel, weight, origin)."""
+        if origin:
+            return self.con.execute(
+                "select src, dst, rel, weight, origin from relations where origin = ?", [origin]
+            ).fetchall()
+        return self.con.execute("select src, dst, rel, weight, origin from relations").fetchall()
 
     def count(self, table: str) -> int:
         return self.con.execute(f"select count(*) from {table}").fetchone()[0]

@@ -20,7 +20,9 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}  # transient / rate-limit
 
 class GeminiClient:
     def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash") -> None:
-        self.api_key = api_key or settings.gemini_api_key
+        # None -> fall back to configured key; explicit "" -> force the deterministic
+        # no-LLM path (used by tests and offline mode). Don't let "" leak the env key.
+        self.api_key = settings.gemini_api_key if api_key is None else api_key
         self.model = model
         self._client = httpx.Client(timeout=60.0)
 
