@@ -238,10 +238,21 @@ class ValidationResult(BaseModel):
 # --------------------------------------------------------------------------- #
 # Explanation (plain-English "explain our findings", grounded in real numbers)
 # --------------------------------------------------------------------------- #
+class HoldingExplanation(BaseModel):
+    """Per-name reasoning, grounded in the real pipeline numbers."""
+
+    symbol: str
+    name: str = ""
+    weight: float = 0.0
+    role: str = "direct"  # "direct" | "supply-chain"
+    relevance: float = 0.0  # cosine to the theme (direct) or graph proximity (indirect)
+    why: str = ""  # one-line, grounded rationale
+
+
 class Explanation(BaseModel):
     """Human-readable account of what we did and why. Every numeric claim is
     filled from the actual pipeline outputs (never the LLM) so it can't drift;
-    the LLM only polishes the one-line `summary`."""
+    the LLM only polishes the prose."""
 
     summary: str = ""  # 1-2 sentence plain-English headline
     understood: str = ""  # what we read from the thesis
@@ -250,6 +261,7 @@ class Explanation(BaseModel):
     risk_note: str = ""  # guardrails / circuit breaker / concentration
     data_note: str = ""  # data window + source
     highlights: list[str] = Field(default_factory=list)  # quick key-findings bullets
+    holdings: list[HoldingExplanation] = Field(default_factory=list)  # per-name reasoning
 
 
 # --------------------------------------------------------------------------- #

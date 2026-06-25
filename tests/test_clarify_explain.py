@@ -123,3 +123,15 @@ def test_compile_strategy_with_answers_produces_grounded_explanation():
     assert len(exp.highlights) == 4
     # data_note must reflect the window we asked for
     assert "1y" in exp.data_note
+
+    # per-holding reasoning is populated and grounded in the real weights
+    assert exp.holdings
+    held_syms = {s for s, w in proposal.target_weights.items() if w > 0.005}
+    assert {h.symbol for h in exp.holdings} == held_syms
+    for h in exp.holdings:
+        assert h.weight > 0.005
+        assert h.why.strip()
+        assert h.role in {"direct", "supply-chain"}
+    # sorted by weight, descending
+    weights = [h.weight for h in exp.holdings]
+    assert weights == sorted(weights, reverse=True)

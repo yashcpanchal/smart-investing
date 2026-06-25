@@ -13,6 +13,7 @@ from smart_investing.domain.types import (
     AssetUniverse,
     BacktestResult,
     Explanation,
+    HoldingExplanation,
     OptimizationResult,
     StrategySpec,
     ValidationResult,
@@ -34,6 +35,55 @@ _SYSTEM = (
 
 def _pct(x: float) -> str:
     return f"{x * 100:.1f}%"
+
+
+def _build_holdings(
+    universe: AssetUniverse, held: dict[str, float], spec: StrategySpec, llm: GeminiClient | None
+) -> list[HoldingExplanation]:
+    """Per-name reasoning, grounded in the real weights. The optional LLM call
+    only writes a qualitative `why` (no numbers), so nothing can drift."""
+    by_symbol = {a.symbol: a for a in universe.assets}
+    rows: list[HoldingExplanation] = []
+    for sym, w in sorted(held.items(), key=lambda kv: -kv[1]):
+        a = by_symbol.get(sym)
+        direct = (a.degree == 1) if a else True
+        rel = 0.0
+        if a:
+            rel = a.scores.get("relevance", a.scores.get("graph_proximity", 0.0))
+        if direct:
+            why = f"Direct match to the thesis (relevance {rel * 100:.0f}%)."
+        else:
+            why = f"Supply-chain exposure surfaced from filings — {a.rationale if a else 'indirect link'}."
+        rows.append(
+            HoldingExplanation(
+                symbol=sym,
+                name=(a.name if a else sym),
+                weight=round(w, 4),
+                role=("direct" if direct else "supply-chain"),
+                relevance=round(rel, 4),
+                why=why,
+            )
+        )
+
+    if llm is not None and getattr(llm, "available", False) and rows:
+        theme = ", ".join(spec.themes) or "the thesis"
+        names = [{"symbol": r.symbol, "name": r.name, "role": r.role} for r in rows]
+        prompt = (
+            f"Theme: {theme}. For each company, write a concrete <=16-word reason it fits the theme "
+            "(what it does / where it sits in the chain). No numbers, no hype. "
+            'Return JSON {"reasons": {"TICKER": "..."}}.\n'
+            f"COMPANIES: {names}"
+        )
+        try:
+            data = llm.complete_json(prompt, system=_SYSTEM)
+            reasons = data.get("reasons") or {}
+            for r in rows:
+                txt = str(reasons.get(r.symbol) or "").strip()
+                if txt:
+                    r.why = txt
+        except Exception:
+            pass
+    return rows
 
 
 def _summary_fallback(spec: StrategySpec, opt: OptimizationResult, n: int) -> str:
@@ -159,6 +209,8 @@ def build_explanation(
         except Exception:
             pass
 
+    holdings = _build_holdings(universe, held, spec, llm)
+
     return Explanation(
         summary=summary,
         understood=understood,
@@ -167,4 +219,5 @@ def build_explanation(
         risk_note=risk_note,
         data_note=data_note,
         highlights=highlights,
+        holdings=holdings,
     )
