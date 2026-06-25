@@ -21,6 +21,7 @@ from smart_investing.llm.clarify import clarify as clarify_prompt
 from smart_investing.llm.compiler import compile_spec
 from smart_investing.llm.gemini import get_llm
 from smart_investing.persistence.repo import StateRepo
+from smart_investing.research import company_profile, industry_brief
 from smart_investing.retrieval.graph_service import GraphService
 from smart_investing.session import Session, SessionManager
 from smart_investing.strategy import compile_strategy
@@ -171,6 +172,19 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         g = get_graph()
         node = node.upper()
         return {"node": g.node_view(node, theme), "neighbors": g.neighbors(node, theme=theme, limit=limit)}
+
+    @app.get("/api/stock/{symbol}")
+    def stock(symbol: str, theme: str = "") -> dict:
+        """Per-stock detail: company facts (yfinance) + LLM theme-fit & must-knows."""
+        g = get_graph()
+        name = g.titles.get(symbol.upper(), "")
+        return company_profile(symbol, name=name, theme=theme, llm=state["llm"])
+
+    @app.get("/api/industry")
+    def industry(theme: str) -> dict:
+        """Industry briefing: deterministic supply-chain layers + current-state
+        analysis grounded in live search (when the LLM is available)."""
+        return industry_brief(theme, get_graph(), llm=state["llm"])
 
     def _holdings_context(session: Session) -> list[dict]:
         p = session.proposal

@@ -32,29 +32,13 @@ class GeminiClient:
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def complete(
-        self,
-        prompt: str,
-        system: str | None = None,
-        json_mode: bool = False,
-        temperature: float = 0.2,
-    ) -> str:
-        url = f"{GEMINI_BASE}/models/{self.model}:generateContent"
-        body: dict = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            # Disable "thinking" — for our short structured prompts it only adds
-            # multi-second latency (and burns the free-tier rate limit) with no
-            # quality gain. This keeps each conversational turn snappy.
-            "generationConfig": {"temperature": temperature, "thinkingConfig": {"thinkingBudget": 0}},
-        }
-        if system:
-            body["systemInstruction"] = {"parts": [{"text": system}]}
-        if json_mode:
-            body["generationConfig"]["responseMimeType"] = "application/json"
+    def _generate(self, body: dict) -> dict:
+        """POST generateContent with fail-fast retry; returns the parsed response.
 
-        # Fail FAST: at most 3 attempts with short backoff (0.5s, 1s). On the free
-        # tier a sustained 429 should drop to the deterministic fallback in ~1.5s,
-        # not hang the turn for 15s+. Transient blips still get a couple of retries.
+        At most 3 attempts with short backoff (0.5s, 1s) — on the free tier a
+        sustained 429 drops to the caller's deterministic fallback in ~1.5s rather
+        than hanging the turn. Transient blips still get a couple of retries."""
+        url = f"{GEMINI_BASE}/models/{self.model}:generateContent"
         last: httpx.Response | None = None
         for attempt in range(3):
             try:
@@ -70,7 +54,26 @@ class GeminiClient:
             break
         assert last is not None
         last.raise_for_status()
-        data = last.json()
+        return last.json()
+
+    def complete(
+        self,
+        prompt: str,
+        system: str | None = None,
+        json_mode: bool = False,
+        temperature: float = 0.2,
+    ) -> str:
+        body: dict = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            # Disable "thinking" — for our short structured prompts it only adds
+            # multi-second latency (and burns the free-tier rate limit) with no gain.
+            "generationConfig": {"temperature": temperature, "thinkingConfig": {"thinkingBudget": 0}},
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        if json_mode:
+            body["generationConfig"]["responseMimeType"] = "application/json"
+        data = self._generate(body)
         try:
             return data["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError):
@@ -79,6 +82,32 @@ class GeminiClient:
     def complete_json(self, prompt: str, system: str | None = None, temperature: float = 0.1) -> dict:
         text = self.complete(prompt, system=system, json_mode=True, temperature=temperature)
         return _loads_lenient(text)
+
+    def complete_grounded(
+        self, prompt: str, system: str | None = None, temperature: float = 0.3
+    ) -> tuple[str, list[dict]]:
+        """Answer grounded in live Google Search. Returns (text, sources) where
+        sources is [{title, uri}]. Used for current industry/market context.
+        Grounding needs "thinking" on, so we don't disable it here."""
+        body: dict = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {"temperature": temperature},
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        data = self._generate(body)
+        try:
+            cand = data["candidates"][0]
+            text = cand["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            return "", []
+        sources: list[dict] = []
+        for ch in cand.get("groundingMetadata", {}).get("groundingChunks", []):
+            web = ch.get("web") or {}
+            if web.get("uri"):
+                sources.append({"title": web.get("title", ""), "uri": web["uri"]})
+        return text, sources
 
 
 def _loads_lenient(text: str) -> dict:
