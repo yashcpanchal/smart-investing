@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -25,6 +25,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# (root-anchored below so they don't clobber web/src/lib etc.)
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
@@ -216,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# smart-investing local data (DuckDB store, caches, indexes)
+/data/
+*.duckdb
+*.duckdb.wal

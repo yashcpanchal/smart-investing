@@ -1,0 +1,43 @@
+"""Domain contracts shared across the system."""
+
+from smart_investing.domain.types import (
+    AccountState,
+    AssetUniverse,
+    BacktestResult,
+    FrontierPoint,
+    OptimizationResult,
+    Order,
+    OrderResult,
+    OrderSide,
+    OrderType,
+    Position,
+    Proposal,
+    RebalanceConfig,
+    RiskParams,
+    SourceWeights,
+    StrategySpec,
+    UniverseAsset,
+    ValidationResult,
+    Violation,
+)
+
+__all__ = [
+    "AccountState",
+    "AssetUniverse",
+    "BacktestResult",
+    "FrontierPoint",
+    "OptimizationResult",
+    "Order",
+    "OrderResult",
+    "OrderSide",
+    "OrderType",
+    "Position",
+    "Proposal",
+    "RebalanceConfig",
+    "RiskParams",
+    "SourceWeights",
+    "StrategySpec",
+    "UniverseAsset",
+    "ValidationResult",
+    "Violation",
+]
