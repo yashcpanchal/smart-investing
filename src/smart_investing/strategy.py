@@ -9,6 +9,7 @@ Ties the whole pipeline together:
 from __future__ import annotations
 
 from smart_investing.data import load_prices, synthetic_prices
+from smart_investing.data.smart_money import compute_smart_money_scores
 from smart_investing.domain.types import (
     AccountState,
     Objective,
@@ -71,6 +72,21 @@ def _apply_answers(spec: StrategySpec, answers: dict | None) -> StrategySpec:
     elif answers.get("supply_chain") == "yes":
         include_indirect = True
 
+    source_weights = spec.source_weights
+    sw_ans = answers.get("source_weights")
+    if isinstance(sw_ans, dict):
+        allowed = set(type(source_weights).model_fields)
+        updates: dict[str, float] = {}
+        for key, val in sw_ans.items():
+            if key not in allowed:
+                continue
+            try:
+                updates[key] = min(1.0, max(0.0, float(val)))
+            except (TypeError, ValueError):
+                continue
+        if updates:
+            source_weights = source_weights.model_copy(update=updates)
+
     extra_excludes = answers.get("exclude_symbols") or []
     excludes = list({*spec.exclude_symbols, *(str(s).upper() for s in extra_excludes)})
     extra_includes = answers.get("include_symbols") or []
@@ -85,6 +101,7 @@ def _apply_answers(spec: StrategySpec, answers: dict | None) -> StrategySpec:
             "include_indirect": include_indirect,
             "exclude_symbols": excludes,
             "include_symbols": includes,
+            "source_weights": source_weights,
         }
     )
 
@@ -114,15 +131,23 @@ def compile_strategy(
     spec: StrategySpec | None = None,
     index=None,
     meta: dict | None = None,
+    smart_money: dict | None = None,
 ) -> Proposal:
     # Reuse a precompiled base spec (cached per conversation) to skip the LLM
     # theme-parse on every refine turn; only compile fresh when none is supplied.
     base = spec if spec is not None else compile_spec(prompt, llm=llm)
     spec = _apply_answers(base, answers)
     k = top_k if top_k is not None else _holdings_for(answers)
+    # Smart-money scores (13F accumulation + insider buys) reorder the universe
+    # via spec.source_weights. Callers with a per-process cache (the API) pass
+    # them in; otherwise compute from the store — deterministic and cheap (two
+    # small SQL reads; empty tables -> {} -> ranking identical to before).
+    if smart_money is None:
+        smart_money = compute_smart_money_scores(store)
     # index/meta: a shared, cached corpus index (avoids re-embedding every filing per call)
     universe = build_universe(
-        prompt, store, spec, top_k=k, embedder=embedder, min_relevance=0.12, index=index, meta=meta
+        prompt, store, spec, top_k=k, embedder=embedder, min_relevance=0.12, index=index, meta=meta,
+        smart_money=smart_money,
     )
 
     px, source = _prices_for(universe.symbols, live=live, lookback=lookback)

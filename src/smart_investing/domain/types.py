@@ -246,6 +246,8 @@ class HoldingExplanation(BaseModel):
     weight: float = 0.0
     role: str = "direct"  # "direct" | "supply-chain"
     relevance: float = 0.0  # cosine to the theme (direct) or graph proximity (indirect)
+    # max of the smart-money sub-scores (13F / insider) when meaningful (>0.5), else None
+    smart_money: float | None = None
     why: str = ""  # one-line, grounded rationale
 
 

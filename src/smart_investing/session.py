@@ -22,6 +22,10 @@ class Session:
     base_spec: StrategySpec | None = None  # cached LLM theme-parse; reused across refine turns
     # tuning knobs (same vocabulary the clarify follow-ups use)
     answers: dict = field(default_factory=lambda: {"risk": "balanced", "breadth": "balanced", "supply_chain": "yes"})
+    # evidence-source blend for universe ranking (defaults match SourceWeights)
+    source_weights: dict = field(
+        default_factory=lambda: {"sec_13f": 0.5, "insider": 0.2, "news_sentiment": 0.2, "social": 0.1}
+    )
     lookback: str = "2y"
     cash: float = 10_000.0
     pinned: list[str] = field(default_factory=list)  # symbols the user explicitly added
@@ -53,7 +57,12 @@ class Session:
 
     def compile_answers(self) -> dict:
         """The answers dict passed to compile_strategy, folding in pin/exclude."""
-        return {**self.answers, "include_symbols": list(self.pinned), "exclude_symbols": list(self.excluded)}
+        return {
+            **self.answers,
+            "include_symbols": list(self.pinned),
+            "exclude_symbols": list(self.excluded),
+            "source_weights": dict(self.source_weights),
+        }
 
     def snapshot(self) -> dict:
         return {
@@ -67,6 +76,7 @@ class Session:
             "cash": self.cash,
             "pinned": list(self.pinned),
             "excluded": list(self.excluded),
+            "source_weights": dict(self.source_weights),
         }
 
 

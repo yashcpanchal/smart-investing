@@ -96,6 +96,16 @@ MUTATION_TOOLS: dict[str, ToolSpec] = {
         {"type": "object", "properties": {"value": {"type": "number", "description": "Dollars, e.g. 25000"}},
          "required": ["value"]},
     ),
+    "set_source_weights": ToolSpec(
+        "set_source_weights",
+        "Set how much the 'smart money' evidence signals influence universe ranking: "
+        "sec_13f = institutional 13F accumulation, insider = recent insider open-market buying. "
+        "Each 0..1 (0 = ignore the signal).",
+        {"type": "object", "properties": {
+            "sec_13f": {"type": "number", "description": "Weight of institutional 13F holdings, 0..1"},
+            "insider": {"type": "number", "description": "Weight of insider buying, 0..1"},
+        }},
+    ),
 }
 
 READ_TOOLS: dict[str, ToolSpec] = {
@@ -130,6 +140,7 @@ _TOOL_TO_OP = {
     "set_theme": "set_theme", "add_symbols": "add", "remove_symbols": "remove",
     "expand": "expand", "set_risk": "set_risk", "set_breadth": "set_breadth",
     "set_supply_chain": "set_supply_chain", "set_lookback": "set_lookback", "set_cash": "set_cash",
+    "set_source_weights": "set_source_weights",
 }
 
 
@@ -212,6 +223,8 @@ def _to_action(tool: str, args: dict) -> dict:
         return {"op": op, "symbols": [str(s).upper() for s in (args.get("symbols") or [])]}
     if op == "expand":
         return {"op": op, "symbol": str(args.get("symbol", "")).upper(), "direction": args.get("direction") or "all"}
+    if op == "set_source_weights":  # the weights ARE the args (no "value" wrapper)
+        return {"op": op, "value": {k: args[k] for k in ("sec_13f", "insider") if args.get(k) is not None}}
     return {"op": op, "value": args.get("value")}
 
 

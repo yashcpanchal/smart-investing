@@ -9,7 +9,7 @@ and surfaces non-obvious connected names, all inspectable.
 
 from __future__ import annotations
 
-from smart_investing.domain.types import AssetUniverse, StrategySpec, UniverseAsset
+from smart_investing.domain.types import AssetUniverse, SourceWeights, StrategySpec, UniverseAsset
 from smart_investing.retrieval.graph import build_comention_graph
 from smart_investing.retrieval.index import RetrievalIndex
 
@@ -25,12 +25,22 @@ def build_index_from_store(store, embedder=None) -> tuple[RetrievalIndex, dict]:
     return index, {"titles": titles, "texts": texts}
 
 
-def _composite(asset: UniverseAsset) -> float:
-    """Rank score. Source-weight fusion (13F/insider/sentiment) plugs in here in
-    Phase 5b; today it's retrieval (direct) + graph proximity (indirect)."""
+def _composite(asset: UniverseAsset, source_weights: SourceWeights | None = None) -> float:
+    """Rank score: retrieval (direct) / graph proximity (indirect), blended with
+    the smart-money signals via spec.source_weights (the Phase 5b fusion). The
+    blend only REORDERS names already admitted by the relevance gate — with
+    zero weights (or no smart-money data) it reduces exactly to the base score."""
     if asset.degree == 1:
-        return asset.scores.get("retrieval", 0.0)
-    return 0.5 * asset.scores.get("graph_proximity", 0.0)
+        base = asset.scores.get("retrieval", 0.0)
+    else:
+        base = 0.5 * asset.scores.get("graph_proximity", 0.0)
+    if source_weights is None:
+        return base
+    return (
+        base
+        + source_weights.sec_13f * asset.scores.get("smart_money_13f", 0.0)
+        + source_weights.insider * asset.scores.get("smart_money_insider", 0.0)
+    )
 
 
 def build_universe(
@@ -44,6 +54,7 @@ def build_universe(
     min_relevance: float = 0.0,
     index: RetrievalIndex | None = None,
     meta: dict | None = None,
+    smart_money: dict[str, dict[str, float]] | None = None,
 ) -> AssetUniverse:
     """relevance_gate: keep a direct hit only if its cosine >= gate * top cosine
     (drops bottom-half noise, embedder-agnostic). min_relevance: optional
@@ -120,5 +131,13 @@ def build_universe(
         seen.add(s)
         assets.append(UniverseAsset(symbol=s, name=titles.get(s, ""), degree=1, rationale="user-specified"))
 
-    assets.sort(key=lambda a: (a.degree, -_composite(a)))
+    # Smart-money sub-scores on every asset (0.0 when no data). They influence
+    # ONLY the ordering below — never the relevance gate above, so smart money
+    # can reorder on-theme names but can't re-admit an off-theme one.
+    for a in assets:
+        sm = (smart_money or {}).get(a.symbol, {})
+        a.scores["smart_money_13f"] = round(sm.get("smart_money_13f", 0.0), 4)
+        a.scores["smart_money_insider"] = round(sm.get("smart_money_insider", 0.0), 4)
+
+    assets.sort(key=lambda a: (a.degree, -_composite(a, spec.source_weights)))
     return AssetUniverse(theme=query, assets=assets[:top_k])
