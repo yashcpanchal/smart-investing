@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { ChatPanel, type Msg } from "../components/ChatPanel";
+import { ChatPanel, type ChatProgress, type Msg } from "../components/ChatPanel";
 import { GraphCanvas } from "../components/GraphCanvas";
 import { IndustryPanel } from "../components/IndustryPanel";
 import { PortfolioPanel } from "../components/PortfolioPanel";
 import { StocksPanel } from "../components/StocksPanel";
-import { api, type ChatState, type Proposal } from "../lib/api";
+import { api, type ChatResponse, type ChatState, type Proposal, type ResearchEntry } from "../lib/api";
 
 type View = "map" | "portfolio" | "stocks" | "industry";
 type Tab = "chat" | View;
@@ -24,6 +24,7 @@ export default function Home() {
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [chatState, setChatState] = useState<ChatState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<ChatProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
   const [visited, setVisited] = useState<Set<View>>(new Set(["map", "portfolio"]));
@@ -32,8 +33,30 @@ export default function Home() {
     setMessages((m) => [...m, { role: "user", text }]);
     setBusy(true);
     setError(null);
+    setProgress(null);
     try {
-      const r = await api.chat(text, sessionId);
+      let r: ChatResponse;
+      try {
+        // Streamed path: surface research activity live while the turn runs.
+        const live: ResearchEntry[] = [];
+        r = await api.chatStream(text, sessionId, (ev) => {
+          if (ev.type === "tool_call") {
+            live.push({ tool: ev.tool, args: ev.args, preview: "" });
+            setProgress({ researched: [...live], status: "researching…" });
+          } else if (ev.type === "tool_result") {
+            const last = [...live].reverse().find((e) => e.tool === ev.tool && !e.preview);
+            if (last) last.preview = ev.preview;
+            setProgress({ researched: [...live], status: "researching…" });
+          } else if (ev.type === "queued") {
+            setProgress({ researched: [...live], status: "queuing changes…" });
+          } else if (ev.type === "round") {
+            setProgress((p) => p ?? { researched: [], status: "thinking…" });
+          }
+        });
+      } catch {
+        // Stream unavailable/broken -> plain request, transparently.
+        r = await api.chat(text, sessionId);
+      }
       setSessionId(r.session_id);
       setChatState(r.state);
       if (r.proposal) {
@@ -46,6 +69,7 @@ export default function Home() {
       setMessages((m) => [...m, { role: "assistant", text: "Something went wrong reaching the engine." }]);
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -120,7 +144,7 @@ export default function Home() {
       <main className="grid min-h-0 flex-1 lg:grid-cols-[360px_1fr]">
         {/* chat — persistent on desktop */}
         <section className={`${tab === "chat" ? "flex" : "hidden"} min-h-0 flex-col border-zinc-800 lg:flex lg:border-r`}>
-          <ChatPanel messages={messages} onSend={send} busy={busy} started={started} />
+          <ChatPanel messages={messages} onSend={send} busy={busy} started={started} progress={progress} />
         </section>
 
         {/* workspace */}
