@@ -37,6 +37,8 @@ _SYSTEM = (
     "portfolio after you reply. You never compute weights, prices, or orders yourself.\n"
     "- Before answering questions about holdings ('why NVDA?', 'what does MU do?'), use the "
     "READ tools rather than guessing.\n"
+    "- Use web_research ONLY for current events, news, or recent developments the corpus can't "
+    "answer; prefer get_stock_facts/get_neighbors/search_companies for static facts.\n"
     "- Never invent tickers that aren't plausible US equities. Prefer editing what exists "
     "over starting over.\n"
     "- Finish with a warm, concrete reply of one to three sentences. Plain text only."
@@ -123,6 +125,13 @@ READ_TOOLS: dict[str, ToolSpec] = {
         "Search the SEC-filing corpus for companies matching a theme or description.",
         {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     ),
+    "web_research": ToolSpec(
+        "web_research",
+        "Live web search for CURRENT events, news, or recent developments only (earnings, "
+        "policy, market moves). For static facts prefer get_stock_facts, get_neighbors, or "
+        "search_companies.",
+        {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    ),
 }
 
 # tool name -> the action op vocabulary the API applies deterministically
@@ -141,12 +150,26 @@ def run_agent(
     history: list[dict] | None = None,
     read_tools: dict[str, Callable[..., dict]] | None = None,
     max_rounds: int = MAX_ROUNDS,
+    on_event: Callable[[dict], None] | None = None,
 ) -> dict:
     """One conversational turn. Returns {"actions": [...], "reply": str, "researched": [...]}.
 
     `history` is prior turns as [{role: "user"|"assistant", text: str}] (without the
     current message). `read_tools` maps READ tool names to callables taking the tool
-    args as kwargs and returning a JSON-safe dict. LLM-first; keyword fallback."""
+    args as kwargs and returning a JSON-safe dict. `researched` is one entry per
+    executed read tool: {"tool", "args", "preview"}. `on_event` (optional) receives
+    progress dicts (round / tool_call / tool_result / queued) as the loop runs; it
+    must never break the loop, so failures inside it are swallowed.
+    LLM-first; keyword fallback."""
+
+    def _emit(event: dict) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(event)
+        except Exception:
+            pass  # progress reporting must never break the turn
+
     if llm is None or not getattr(llm, "available", False) or not message.strip():
         return {**_fallback(message, context), "researched": []}
 
@@ -159,9 +182,10 @@ def run_agent(
     messages.append(ChatMessage(role="user", content=message))
 
     actions: list[dict] = []
-    researched: list[str] = []
+    researched: list[dict] = []
     try:
         for round_no in range(max_rounds):
+            _emit({"type": "round", "round": round_no})
             # Last round: no tools, so the model must produce the reply.
             offer = tools if round_no < max_rounds - 1 else None
             resp = llm.chat(messages, system=_system_prompt(context), tools=offer)
@@ -176,9 +200,13 @@ def run_agent(
                 if call.name in _TOOL_TO_OP:
                     actions.append(_to_action(call.name, call.arguments))
                     out: dict = {"status": "queued", "note": "applied after your reply; portfolio rebuilds automatically"}
+                    _emit({"type": "queued", "tool": call.name})
                 elif read_tools and call.name in read_tools:
-                    researched.append(call.name)
+                    _emit({"type": "tool_call", "tool": call.name, "args": call.arguments})
                     out = _run_read_tool(read_tools[call.name], call.arguments)
+                    preview = _preview(out)
+                    researched.append({"tool": call.name, "args": call.arguments, "preview": preview})
+                    _emit({"type": "tool_result", "tool": call.name, "preview": preview})
                 else:
                     out = {"error": f"unknown tool {call.name}"}
                 results.append(ToolResult(call=call, content=out))
@@ -213,6 +241,14 @@ def _to_action(tool: str, args: dict) -> dict:
     if op == "expand":
         return {"op": op, "symbol": str(args.get("symbol", "")).upper(), "direction": args.get("direction") or "all"}
     return {"op": op, "value": args.get("value")}
+
+
+_PREVIEW_CAP = 200
+
+
+def _preview(result: dict) -> str:
+    """Short human-scannable slice of a tool result for the trace/UI."""
+    return str(result)[:_PREVIEW_CAP]
 
 
 def _run_read_tool(fn: Callable[..., dict], args: dict) -> dict:
