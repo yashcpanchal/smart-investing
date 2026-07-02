@@ -15,8 +15,23 @@ graph → cvxpy MPT optimizer (+ efficient frontier) → deterministic circuit
 breaker → PaperBroker execution → persisted portfolio. FastAPI backend, Next.js
 frontend.
 
-## Status (2026-06-25 — conversational rebuild)
-- Branch **`dev`**, **NOT pushed** since the rebuild (Dhruv+Yash review first).
+## Status (2026-07-01 — provider-agnostic LLM core + real agent loop)
+- Branch **`dev`**, pushed to origin (Yash is onboarding from this file).
+- **LLM layer rebuilt for plug-and-play providers**: everything types against
+  `llm/base.py::LLMClient` (chat with native tool-calling + complete/
+  complete_json/complete_grounded). `GeminiClient` (function-calling added) and
+  `AnthropicClient` (Claude Messages API, web_search grounding, refusal-safe)
+  both implement it. `llm/factory.get_llm()` picks by env: **set
+  ANTHROPIC_API_KEY and Claude takes over automatically** (or force with
+  LLM_PROVIDER / override LLM_MODEL). Gemini remains the tested default.
+- **The chat "agent" is now a real tool-use loop** (`llm/agent.py::run_agent`,
+  bounded at 4 rounds): READ tools (get_portfolio incl. per-holding reasoning,
+  get_stock_facts, get_neighbors, search_companies) execute live so it
+  researches before answering; EDIT tools queue as the old action vocabulary
+  and are applied deterministically with one rebuild per turn — the LLM still
+  never touches money/math. Conversation history now reaches the model.
+  /api/chat returns `researched`; ChatPanel renders the research trace.
+  Live-verified against Gemini (function-calling roundtrip + grounded reply).
 - Paper MVP (Phases 0–11) done; then a major UX rebuild turned the linear form
   into a **conversational, explorable, 5-view workspace**:
   - Corpus expanded ~28 → **72 US 10-K filers** (semis/equipment/datacenter/
@@ -62,11 +77,14 @@ Optional Robinhood client: `uv pip install -e ".[robinhood]"`.
   cached), `bm25.py`, `fusion.py` (RRF k=20), `graph.py` (co-mention, distinctive
   bigram), `index.py`, `universe.py` (build_universe: direct + indirect, relevance
   gate).
-- `llm/` — `gemini.py` (REST client; fail-fast retry; `complete_json`,
-  `complete_grounded` = Google-Search grounding; thinking disabled), `compiler.py`
-  (prompt → StrategySpec + deterministic theme-cleaner fallback), `agent.py`
-  (chat message → actions + reply, keyword fallback), `explain.py` (grounded
-  Explanation incl. per-holding `why`), `clarify.py`.
+- `llm/` — `base.py` (**LLMClient contract**: `chat(messages, tools)` with
+  provider-neutral ToolSpec/ToolCall/ChatMessage/LLMResponse, shared fail-fast
+  retry, lenient JSON), `gemini.py` + `anthropic.py` (providers; both REST via
+  httpx, no SDK deps), `factory.py` (`get_llm()` — LLM_PROVIDER/LLM_MODEL env
+  selection, auto prefers Anthropic when keyed), `agent.py` (**tool-use loop**:
+  read tools run live, mutations queue as actions; keyword fallback),
+  `compiler.py` (prompt → StrategySpec + deterministic fallback), `explain.py`
+  (grounded Explanation incl. per-holding `why`), `clarify.py`.
 - `session.py` — in-memory `Session`/`SessionManager` (theme, knobs, pinned/
   excluded, cached base_spec, last proposal, transcript).
 - `research.py` — `company_profile` (yfinance facts, cached) + `industry_brief`
@@ -108,13 +126,16 @@ Optional Robinhood client: `uv pip install -e ".[robinhood]"`.
 shape. The app runtime only needs `GEMINI_API_KEY` (+ free EDGAR/yfinance).
 
 ## Pending / next
-1. Rotate the two secrets.
+1. Rotate GITHUB_TOKEN (Gemini key already rotated; add ANTHROPIC_API_KEY when
+   we get one — the factory flips to Claude automatically).
 2. Review `dev` → merge to `main`.
 3. Phase 11: desktop-OAuth a Robinhood agentic account, `broker.list_tools()`,
    fill `_TOOL_MAP` + response parsing in `broker/robinhood.py`.
-4. Polish: chunked embeddings (recall), foreign filers (40-F/20-F), source-weight
+4. Agent polish: stream replies token-by-token, richer tool trace in the UI,
+   let the agent call `complete_grounded` as a `web_research` read tool.
+5. Polish: chunked embeddings (recall), foreign filers (40-F/20-F), source-weight
    configurator sliders, 13F/insider "smart money" scoring.
-5. Phases 12 (auth) / 13 (compliance) / 14 (deploy) / 15 (scale).
+6. Phases 12 (auth) / 13 (compliance) / 14 (deploy) / 15 (scale).
 
 ## Working style (founder preference)
 Run multiple confirmation subagents at each step; commit per phase to `dev` with
