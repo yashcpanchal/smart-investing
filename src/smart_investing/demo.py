@@ -146,7 +146,7 @@ def run_demo2(
     """Demo 2 — the full MVP loop: natural-language prompt -> universe -> optimized
     portfolio -> paper execution."""
     from smart_investing.data import Store, ingest_companies
-    from smart_investing.llm.gemini import get_llm
+    from smart_investing.llm.factory import get_llm
     from smart_investing.strategy import compile_strategy
 
     console.rule("[bold]Demo 2 — natural language -> portfolio")

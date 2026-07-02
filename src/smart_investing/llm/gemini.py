@@ -51,9 +51,7 @@ class GeminiClient(LLMClient):
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
         if tools:
-            body["tools"] = [{"functionDeclarations": [
-                {"name": t.name, "description": t.description, "parameters": t.parameters} for t in tools
-            ]}]
+            body["tools"] = [{"functionDeclarations": [_to_decl(t) for t in tools]}]
         elif json_mode:  # responseMimeType and tools are mutually exclusive on Gemini
             body["generationConfig"]["responseMimeType"] = "application/json"
         data = self._generate(body)
@@ -84,6 +82,14 @@ class GeminiClient(LLMClient):
             if web.get("uri"):
                 sources.append({"title": web.get("title", ""), "uri": web["uri"]})
         return text, sources
+
+
+def _to_decl(t: ToolSpec) -> dict:
+    decl = {"name": t.name, "description": t.description}
+    # Gemini rejects declarations with an empty properties object — omit instead.
+    if t.parameters.get("properties"):
+        decl["parameters"] = t.parameters
+    return decl
 
 
 def _to_content(m: ChatMessage) -> dict:

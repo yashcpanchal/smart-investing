@@ -8,7 +8,7 @@ the panels still render when offline or rate-limited).
 
 from __future__ import annotations
 
-from smart_investing.llm.gemini import GeminiClient
+from smart_investing.llm.base import LLMClient
 
 _INFO_CACHE: dict[str, dict] = {}
 
@@ -69,7 +69,7 @@ def _first_sentences(text: str, n: int = 2) -> str:
     return s if s.endswith(".") else s + "."
 
 
-def company_profile(symbol: str, *, name: str = "", theme: str = "", llm: GeminiClient | None = None) -> dict:
+def company_profile(symbol: str, *, name: str = "", theme: str = "", llm: LLMClient | None = None) -> dict:
     """Key must-know facts for one company, plus an LLM theme-fit + bullets."""
     symbol = symbol.upper()
     info = _yf_info(symbol)
@@ -173,7 +173,7 @@ _IND_SYSTEM = (
 )
 
 
-def industry_brief(theme: str, graph, *, llm: GeminiClient | None = None) -> dict:
+def industry_brief(theme: str, graph, *, llm: LLMClient | None = None) -> dict:
     """Supply-chain structure (deterministic) + current-state analysis (grounded LLM)."""
     layers = _supply_chain_layers(graph, theme)
     chain_str = "  ->  ".join(

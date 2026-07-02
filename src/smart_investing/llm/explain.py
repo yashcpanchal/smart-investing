@@ -18,7 +18,7 @@ from smart_investing.domain.types import (
     StrategySpec,
     ValidationResult,
 )
-from smart_investing.llm.gemini import GeminiClient
+from smart_investing.llm.base import LLMClient
 
 _OBJ_WORDS = {
     "max_sharpe": "the best return per unit of risk (max-Sharpe)",
@@ -86,7 +86,7 @@ def build_explanation(
     n_orders: int,
     lookback: str,
     price_source: str,
-    llm: GeminiClient | None = None,
+    llm: LLMClient | None = None,
 ) -> Explanation:
     held = {s: w for s, w in target_weights.items() if w > 0.005}
     n_held = len(held)

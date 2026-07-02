@@ -16,10 +16,10 @@ from smart_investing.broker.paper import PaperBroker
 from smart_investing.data.store import Store
 from smart_investing.domain.types import Proposal
 from smart_investing.execution.executor import execute_proposal
-from smart_investing.llm.agent import interpret as interpret_message
+from smart_investing.llm.agent import run_agent
 from smart_investing.llm.clarify import clarify as clarify_prompt
 from smart_investing.llm.compiler import compile_spec
-from smart_investing.llm.gemini import get_llm
+from smart_investing.llm.factory import get_llm
 from smart_investing.persistence.repo import StateRepo
 from smart_investing.research import company_profile, industry_brief
 from smart_investing.retrieval.graph_service import GraphService
@@ -196,6 +196,49 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             if p.target_weights.get(a.symbol, 0.0) > 0.005
         ]
 
+    def _read_tools(session: Session) -> dict:
+        """Live research tools the agent can call mid-turn. Read-only by design —
+        mutations flow through the action vocabulary + deterministic rebuild."""
+        g = get_graph()
+
+        def get_portfolio() -> dict:
+            p = session.proposal
+            if p is None:
+                return {"holdings": [], "note": "no portfolio built yet"}
+            o = p.optimization
+            why = {h.symbol: h.why for h in (p.explanation.holdings if p.explanation else [])}
+            return {
+                "holdings": [
+                    {"symbol": a.symbol, "name": a.name,
+                     "weight": round(p.target_weights.get(a.symbol, 0.0), 4),
+                     "why": why.get(a.symbol, "")}
+                    for a in p.universe.assets
+                    if p.target_weights.get(a.symbol, 0.0) > 0.005
+                ],
+                "expected_return": round(o.expected_return, 4),
+                "volatility": round(o.volatility, 4),
+                "sharpe": round(o.sharpe, 2),
+                "blocked": p.blocked,
+            }
+
+        def get_stock_facts(symbol: str = "") -> dict:
+            sym = str(symbol).upper()
+            # Facts only — no nested LLM call inside the agent loop.
+            return company_profile(sym, name=g.titles.get(sym, ""), theme=session.theme, llm=None)
+
+        def get_neighbors(symbol: str = "", direction: str = "all") -> dict:
+            sym = str(symbol).upper()
+            nbrs = g.neighbors(sym, theme=session.theme, limit=10)
+            if direction != "all":
+                nbrs = [n for n in nbrs if n.get("direction") == direction]
+            return {"node": sym, "neighbors": nbrs}
+
+        def search_companies(query: str = "") -> dict:
+            return {"matches": g.search(str(query), top_k=8)}
+
+        return {"get_portfolio": get_portfolio, "get_stock_facts": get_stock_facts,
+                "get_neighbors": get_neighbors, "search_companies": search_companies}
+
     @app.post("/api/chat")
     def chat(req: ChatRequest) -> dict:
         """The conversation loop: interpret freeform feedback -> apply -> rebuild -> reply.
@@ -207,14 +250,19 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
 
         first_turn = not session.theme
         # First turn: the message IS the thesis — no need to spend an LLM call
-        # interpreting refine-intent. Later turns: interpret freeform feedback.
+        # interpreting refine-intent. Later turns: the agent loop researches with
+        # read tools and queues edits, with the conversation history in context.
         if first_turn:
             session.theme = req.message.strip()
-            result: dict = {"actions": [], "reply": ""}
+            result: dict = {"actions": [], "reply": "", "researched": []}
             actions: list[dict] = []
         else:
             context = {**session.snapshot(), "holdings": _holdings_context(session)}
-            result = interpret_message(req.message, context, state["llm"])
+            result = run_agent(
+                req.message, context, state["llm"],
+                history=session.messages[:-1],  # current message passed separately
+                read_tools=_read_tools(session),
+            )
             actions = result["actions"]
             if any(a.get("op") == "set_theme" and a.get("value") for a in actions):
                 session.base_spec = None  # theme changed -> re-parse on rebuild
@@ -254,6 +302,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             "session_id": session.id,
             "reply": reply,
             "actions": actions,
+            "researched": result.get("researched", []),  # read tools the agent used
             "added": changes["added"],
             "removed": changes["removed"],
             "rebuilt": needs_rebuild and bool(session.theme),

@@ -5,7 +5,15 @@ import { useEffect, useRef, useState } from "react";
 export interface Msg {
   role: "user" | "assistant";
   text: string;
+  researched?: string[]; // read tools the agent used before replying
 }
+
+const TOOL_LABELS: Record<string, string> = {
+  get_portfolio: "checked the portfolio",
+  get_stock_facts: "looked up company facts",
+  get_neighbors: "walked the supply chain",
+  search_companies: "searched SEC filings",
+};
 
 const EXAMPLES = [
   "The AI data-center buildout: chips, power, and cooling",
@@ -72,7 +80,12 @@ export function ChatPanel({
         )}
 
         {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+          <div key={i} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
+            {m.role === "assistant" && (m.researched?.length ?? 0) > 0 && (
+              <div className="mb-1 px-1 text-[10px] italic text-zinc-500">
+                🔍 {[...new Set(m.researched)].map((t) => TOOL_LABELS[t] ?? t).join(" · ")}
+              </div>
+            )}
             <div
               className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
                 m.role === "user"

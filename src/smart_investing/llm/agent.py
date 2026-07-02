@@ -1,93 +1,238 @@
-"""Conversational agent: a freeform message -> structured actions + a reply.
+"""Conversational agent: a real tool-use loop, not a one-shot intent mapper.
 
-The LLM is the interpreter (it maps natural feedback like "make it punchier and
-go deeper on the chip suppliers" onto our fixed action vocabulary), but it never
-touches money or math — actions are applied deterministically by the caller and
-the portfolio is always rebuilt by the real pipeline. A keyword fallback keeps
-the conversation working when no LLM is configured or it rate-limits.
+The LLM drives a bounded loop over two kinds of tools:
 
-Action vocabulary (each action is one object):
-  {"op": "set_theme", "value": "<new thesis>"}
-  {"op": "add",        "symbols": ["NVDA", "MU"]}
-  {"op": "remove",     "symbols": ["KO"]}
-  {"op": "expand",     "symbol": "NVDA", "direction": "upstream|downstream|peer|all"}
-  {"op": "set_risk",       "value": "low|balanced|high"}
-  {"op": "set_breadth",    "value": "focused|balanced|diversified"}
-  {"op": "set_supply_chain","value": "yes|no"}
-  {"op": "set_lookback",   "value": "1y|2y|3y|5y"}
-  {"op": "set_cash",       "value": 25000}
-  {"op": "none"}      # a pure question / chit-chat; answer in `reply`, change nothing
+- READ tools (get_portfolio, get_stock_facts, get_neighbors, search_companies)
+  execute live inside the loop, so the agent can actually research before it
+  answers "why MU?" instead of guessing from a one-line context string.
+- MUTATION tools (set_theme, add/remove symbols, expand, knobs, cash) are
+  QUEUED as actions and returned to the caller — the LLM never touches money
+  or math. Actions are applied deterministically and the portfolio is always
+  rebuilt by the real pipeline, exactly as before.
+
+Conversation history is passed through, so multi-turn context finally works.
+A keyword fallback keeps the conversation alive when no LLM is configured or
+it rate-limits.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Callable
 
-from smart_investing.llm.gemini import GeminiClient
+from smart_investing.llm.base import ChatMessage, LLMClient, ToolResult, ToolSpec
 
-_OPS = {
-    "set_theme", "add", "remove", "expand", "set_risk", "set_breadth",
-    "set_supply_chain", "set_lookback", "set_cash", "none",
-}
+MAX_ROUNDS = 4  # LLM turns per user message (tool rounds + the final reply)
+_HISTORY_TURNS = 10  # prior messages shown to the model
+_READ_RESULT_CAP = 2400  # chars of tool output fed back per call
 
 _SYSTEM = (
-    "You are the brain of a thematic-investing copilot. The user is mid-conversation, "
-    "refining a portfolio built from real SEC filings. Map their message onto the FIXED "
-    "action vocabulary you are given and write a warm, concrete one-to-two sentence reply. "
-    "Never invent tickers that aren't plausible US equities. Prefer editing what exists over "
-    "starting over. Output ONLY JSON: {\"actions\": [...], \"reply\": \"...\"}."
+    "You are the brain of a thematic-investing copilot. The user is refining a US-equity "
+    "portfolio built from real SEC filings, a supply-chain graph, and a mean-variance "
+    "optimizer. You have READ tools to research (portfolio details, stock facts, "
+    "supply-chain neighbors, company search) and EDIT tools to change the strategy.\n"
+    "Rules:\n"
+    "- EDIT tools queue changes; the deterministic pipeline applies them and rebuilds the "
+    "portfolio after you reply. You never compute weights, prices, or orders yourself.\n"
+    "- Before answering questions about holdings ('why NVDA?', 'what does MU do?'), use the "
+    "READ tools rather than guessing.\n"
+    "- Never invent tickers that aren't plausible US equities. Prefer editing what exists "
+    "over starting over.\n"
+    "- Finish with a warm, concrete reply of one to three sentences. Plain text only."
 )
 
-_TEMPLATE = """CONTEXT
-Current thesis: {theme}
-Risk: {risk} | Breadth: {breadth} | Supply-chain: {supply_chain} | Look-back: {lookback} | Cash: ${cash:,.0f}
-Current holdings: {holdings}
-Available supply-chain neighbors to "go deeper" are fetched by the app when you emit an "expand" action.
+# ------------------------------------------------------------- tool schemas
+_SYMS = {"type": "array", "items": {"type": "string"}, "description": "Ticker symbols, e.g. ['NVDA','MU']"}
 
-ACTION VOCABULARY (emit zero or more; omit "rebuild" — the app rebuilds automatically after any change):
-  set_theme(value) | add(symbols[]) | remove(symbols[]) | expand(symbol, direction)
-  set_risk(low|balanced|high) | set_breadth(focused|balanced|diversified)
-  set_supply_chain(yes|no) | set_lookback(1y|2y|3y|5y) | set_cash(number) | none
+MUTATION_TOOLS: dict[str, ToolSpec] = {
+    "set_theme": ToolSpec(
+        "set_theme",
+        "Replace the investment thesis with a new one. Only when the user pivots the whole idea.",
+        {"type": "object", "properties": {"value": {"type": "string", "description": "The new thesis"}},
+         "required": ["value"]},
+    ),
+    "add_symbols": ToolSpec(
+        "add_symbols",
+        "Pin specific tickers into the portfolio universe.",
+        {"type": "object", "properties": {"symbols": _SYMS}, "required": ["symbols"]},
+    ),
+    "remove_symbols": ToolSpec(
+        "remove_symbols",
+        "Exclude tickers from the portfolio (user said drop/sell/without).",
+        {"type": "object", "properties": {"symbols": _SYMS}, "required": ["symbols"]},
+    ),
+    "expand": ToolSpec(
+        "expand",
+        "Go deeper around one holding: pin its supply-chain neighbors (suppliers=upstream, "
+        "customers=downstream, competitors=peer).",
+        {"type": "object", "properties": {
+            "symbol": {"type": "string"},
+            "direction": {"type": "string", "enum": ["upstream", "downstream", "peer", "all"]},
+        }, "required": ["symbol"]},
+    ),
+    "set_risk": ToolSpec(
+        "set_risk", "Set the risk appetite.",
+        {"type": "object", "properties": {"value": {"type": "string", "enum": ["low", "balanced", "high"]}},
+         "required": ["value"]},
+    ),
+    "set_breadth": ToolSpec(
+        "set_breadth", "Set concentration: focused (fewer names) vs diversified (more names).",
+        {"type": "object", "properties": {"value": {"type": "string", "enum": ["focused", "balanced", "diversified"]}},
+         "required": ["value"]},
+    ),
+    "set_supply_chain": ToolSpec(
+        "set_supply_chain", "Include indirect supply-chain beneficiaries (yes) or direct plays only (no).",
+        {"type": "object", "properties": {"value": {"type": "string", "enum": ["yes", "no"]}},
+         "required": ["value"]},
+    ),
+    "set_lookback": ToolSpec(
+        "set_lookback", "Set the price-history window used for risk and backtest.",
+        {"type": "object", "properties": {"value": {"type": "string", "enum": ["1y", "2y", "3y", "5y"]}},
+         "required": ["value"]},
+    ),
+    "set_cash": ToolSpec(
+        "set_cash", "Set the cash amount to invest, in dollars.",
+        {"type": "object", "properties": {"value": {"type": "number", "description": "Dollars, e.g. 25000"}},
+         "required": ["value"]},
+    ),
+}
 
-USER MESSAGE:
-\"\"\"{message}\"\"\"
+READ_TOOLS: dict[str, ToolSpec] = {
+    "get_portfolio": ToolSpec(
+        "get_portfolio",
+        "Current portfolio: holdings with weights, expected return/volatility/Sharpe, and "
+        "per-holding reasoning. Use before answering questions about the portfolio.",
+        {"type": "object", "properties": {}},
+    ),
+    "get_stock_facts": ToolSpec(
+        "get_stock_facts",
+        "Company facts for one ticker: name, sector, business summary, market cap, margins.",
+        {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+    ),
+    "get_neighbors": ToolSpec(
+        "get_neighbors",
+        "Supply-chain graph neighbors of a ticker: upstream suppliers, downstream customers, peers.",
+        {"type": "object", "properties": {
+            "symbol": {"type": "string"},
+            "direction": {"type": "string", "enum": ["upstream", "downstream", "peer", "all"]},
+        }, "required": ["symbol"]},
+    ),
+    "search_companies": ToolSpec(
+        "search_companies",
+        "Search the SEC-filing corpus for companies matching a theme or description.",
+        {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    ),
+}
 
-Return ONLY {{"actions": [...], "reply": "..."}}. If it's just a question (e.g. "why NVDA?"),
-use actions:[{{"op":"none"}}] and answer it in `reply` using the context."""
+# tool name -> the action op vocabulary the API applies deterministically
+_TOOL_TO_OP = {
+    "set_theme": "set_theme", "add_symbols": "add", "remove_symbols": "remove",
+    "expand": "expand", "set_risk": "set_risk", "set_breadth": "set_breadth",
+    "set_supply_chain": "set_supply_chain", "set_lookback": "set_lookback", "set_cash": "set_cash",
+}
 
+
+def run_agent(
+    message: str,
+    context: dict,
+    llm: LLMClient | None,
+    *,
+    history: list[dict] | None = None,
+    read_tools: dict[str, Callable[..., dict]] | None = None,
+    max_rounds: int = MAX_ROUNDS,
+) -> dict:
+    """One conversational turn. Returns {"actions": [...], "reply": str, "researched": [...]}.
+
+    `history` is prior turns as [{role: "user"|"assistant", text: str}] (without the
+    current message). `read_tools` maps READ tool names to callables taking the tool
+    args as kwargs and returning a JSON-safe dict. LLM-first; keyword fallback."""
+    if llm is None or not getattr(llm, "available", False) or not message.strip():
+        return {**_fallback(message, context), "researched": []}
+
+    tools = list(MUTATION_TOOLS.values()) + [READ_TOOLS[n] for n in (read_tools or {})]
+    messages = [
+        ChatMessage(role=m["role"], content=m["text"])
+        for m in (history or [])[-_HISTORY_TURNS:]
+        if m.get("role") in ("user", "assistant") and m.get("text")
+    ]
+    messages.append(ChatMessage(role="user", content=message))
+
+    actions: list[dict] = []
+    researched: list[str] = []
+    try:
+        for round_no in range(max_rounds):
+            # Last round: no tools, so the model must produce the reply.
+            offer = tools if round_no < max_rounds - 1 else None
+            resp = llm.chat(messages, system=_system_prompt(context), tools=offer)
+            if not resp.tool_calls:
+                reply = resp.text.strip()
+                if reply or actions:
+                    return {"actions": actions or [{"op": "none"}], "reply": reply, "researched": researched}
+                break  # empty turn -> fallback
+            messages.append(ChatMessage(role="assistant", content=resp.text, tool_calls=resp.tool_calls))
+            results = []
+            for call in resp.tool_calls:
+                if call.name in _TOOL_TO_OP:
+                    actions.append(_to_action(call.name, call.arguments))
+                    out: dict = {"status": "queued", "note": "applied after your reply; portfolio rebuilds automatically"}
+                elif read_tools and call.name in read_tools:
+                    researched.append(call.name)
+                    out = _run_read_tool(read_tools[call.name], call.arguments)
+                else:
+                    out = {"error": f"unknown tool {call.name}"}
+                results.append(ToolResult(call=call, content=out))
+            messages.append(ChatMessage(role="tool", tool_results=results))
+    except Exception:
+        pass  # any provider hiccup -> deterministic path below
+    if actions:  # model made edits but never phrased a reply
+        return {"actions": actions, "reply": "", "researched": researched}
+    return {**_fallback(message, context), "researched": researched}
+
+
+def interpret(message: str, context: dict, llm: LLMClient | None) -> dict:
+    """Back-compat single-shot entry point (no history / read tools)."""
+    return run_agent(message, context, llm)
+
+
+def _system_prompt(context: dict) -> str:
+    holdings = context.get("holdings") or []
+    hs = ", ".join(f"{h['symbol']} {h.get('weight', 0) * 100:.0f}%" for h in holdings[:12]) or "(none yet)"
+    return _SYSTEM + (
+        f"\n\nCURRENT STATE\nThesis: {context.get('theme') or '(not set)'}\n"
+        f"Risk: {context.get('risk') or 'balanced'} | Breadth: {context.get('breadth') or 'balanced'} | "
+        f"Supply-chain: {context.get('supply_chain') or 'yes'} | Look-back: {context.get('lookback') or '2y'} | "
+        f"Cash: ${float(context.get('cash') or 10_000):,.0f}\nHoldings: {hs}"
+    )
+
+
+def _to_action(tool: str, args: dict) -> dict:
+    op = _TOOL_TO_OP[tool]
+    if op in ("add", "remove"):
+        return {"op": op, "symbols": [str(s).upper() for s in (args.get("symbols") or [])]}
+    if op == "expand":
+        return {"op": op, "symbol": str(args.get("symbol", "")).upper(), "direction": args.get("direction") or "all"}
+    return {"op": op, "value": args.get("value")}
+
+
+def _run_read_tool(fn: Callable[..., dict], args: dict) -> dict:
+    try:
+        out = fn(**{k: v for k, v in args.items() if isinstance(k, str)})
+    except Exception as e:  # tool errors go back to the model, not up the stack
+        return {"error": str(e)[:200]}
+    # Cap what flows back into the context window.
+    text = json.dumps(out, default=str)
+    if len(text) > _READ_RESULT_CAP:
+        return {"truncated": True, "data": text[:_READ_RESULT_CAP]}
+    return out
+
+
+# ------------------------------------------------------------- fallback path
 _TICKER = re.compile(r"\b[A-Z]{1,5}\b")
 _RISK_UP = ("aggressive", "riskier", "more risk", "punchy", "punchier", "growth", "go for it", "yolo", "spicy")
 _RISK_DOWN = ("safer", "less risk", "lower risk", "conservative", "defensive", "play it safe", "cautious")
 _WIDE = ("diversif", "spread", "more names", "broaden", "wider")
 _NARROW = ("focus", "fewer", "concentrat", "tighter", "high conviction", "fewer names")
-
-
-def interpret(message: str, context: dict, llm: GeminiClient | None) -> dict:
-    """Returns {"actions": [ {op,...} ], "reply": str}. LLM-first, keyword fallback."""
-    if llm is not None and getattr(llm, "available", False) and message.strip():
-        try:
-            data = llm.complete_json(_TEMPLATE.format(message=message, **_ctx(context)), system=_SYSTEM)
-            actions = [a for a in data.get("actions", []) if isinstance(a, dict) and a.get("op") in _OPS]
-            reply = str(data.get("reply") or "").strip()
-            if actions or reply:
-                return {"actions": actions or [{"op": "none"}], "reply": reply}
-        except Exception:
-            pass
-    return _fallback(message, context)
-
-
-def _ctx(context: dict) -> dict:
-    holdings = context.get("holdings") or []
-    hs = ", ".join(f"{h['symbol']} {h.get('weight', 0) * 100:.0f}%" for h in holdings[:12]) or "(none yet)"
-    return {
-        "theme": context.get("theme") or "(not set)",
-        "risk": context.get("risk") or "balanced",
-        "breadth": context.get("breadth") or "balanced",
-        "supply_chain": context.get("supply_chain") or "yes",
-        "lookback": context.get("lookback") or "2y",
-        "cash": float(context.get("cash") or 10_000),
-        "holdings": hs,
-    }
 
 
 def _fallback(message: str, context: dict) -> dict:

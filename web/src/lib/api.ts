@@ -144,6 +144,7 @@ export interface ChatResponse {
   session_id: string;
   reply: string;
   actions: ChatAction[];
+  researched?: string[]; // read tools the agent used before replying
   added: string[];
   removed: string[];
   rebuilt: boolean;

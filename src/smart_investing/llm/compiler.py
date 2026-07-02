@@ -11,7 +11,8 @@ from __future__ import annotations
 import re
 
 from smart_investing.domain.types import Objective, RiskParams, StrategySpec
-from smart_investing.llm.gemini import GeminiClient, get_llm
+from smart_investing.llm.base import LLMClient
+from smart_investing.llm.factory import get_llm
 
 # Strip conversational lead-ins and risk/breadth qualifiers so the no-LLM theme
 # is a tight search phrase. A verbose query ("I want to invest in X, lower risk")
@@ -106,7 +107,7 @@ def _spec_from_dict(prompt: str, d: dict) -> StrategySpec:
     )
 
 
-def compile_spec(prompt: str, llm: GeminiClient | None = None) -> StrategySpec:
+def compile_spec(prompt: str, llm: LLMClient | None = None) -> StrategySpec:
     llm = llm if llm is not None else get_llm()
     if llm and llm.available:
         try:

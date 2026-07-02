@@ -40,7 +40,7 @@ export default function Home() {
         setProposal(r.proposal);
         if (tab === "chat") goto("map");
       }
-      setMessages((m) => [...m, { role: "assistant", text: r.reply }]);
+      setMessages((m) => [...m, { role: "assistant", text: r.reply, researched: r.researched }]);
     } catch (e) {
       setError(String(e));
       setMessages((m) => [...m, { role: "assistant", text: "Something went wrong reaching the engine." }]);

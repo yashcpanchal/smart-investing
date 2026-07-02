@@ -12,7 +12,8 @@ count from the breadth/risk answers. That's our job, not the user's.
 
 from __future__ import annotations
 
-from smart_investing.llm.gemini import GeminiClient, get_llm
+from smart_investing.llm.base import LLMClient
+from smart_investing.llm.factory import get_llm
 
 # The fixed, always-wired follow-ups. `kind` drives the UI control; each option's
 # `value` is what the API maps back onto the StrategySpec.
@@ -106,7 +107,7 @@ def _fallback_interpretation(prompt: str) -> dict:
     }
 
 
-def clarify(prompt: str, llm: GeminiClient | None = None) -> dict:
+def clarify(prompt: str, llm: LLMClient | None = None) -> dict:
     """Returns {"interpretation": str, "focus": str, "questions": [...]}."""
     llm = llm if llm is not None else get_llm()
     head = _fallback_interpretation(prompt)
