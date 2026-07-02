@@ -261,7 +261,10 @@ def ingest_13f(store, client=None, managers: list[tuple[str, int]] | None = None
                     break
             # Replace, don't accumulate: drop this manager's prior-quarter rows
             # so the table always holds exactly one (latest) 13F per manager.
-            store.clear_inst_holdings(cik)
+            # Only once the new filing parsed — a fetchable-but-unparseable info
+            # table must not wipe the last good quarter.
+            if rows:
+                store.clear_inst_holdings(cik)
             matched = 0
             for row in rows:
                 ticker = match_issuer(row["issuer_name"], keymap)
