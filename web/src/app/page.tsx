@@ -6,7 +6,14 @@ import { GraphCanvas } from "../components/GraphCanvas";
 import { IndustryPanel } from "../components/IndustryPanel";
 import { PortfolioPanel } from "../components/PortfolioPanel";
 import { StocksPanel } from "../components/StocksPanel";
-import { api, type ChatResponse, type ChatState, type Proposal, type ResearchEntry } from "../lib/api";
+import {
+  api,
+  StreamUnavailableError,
+  type ChatResponse,
+  type ChatState,
+  type Proposal,
+  type ResearchEntry,
+} from "../lib/api";
 
 type View = "map" | "portfolio" | "stocks" | "industry";
 type Tab = "chat" | View;
@@ -53,8 +60,12 @@ export default function Home() {
             setProgress((p) => p ?? { researched: [], status: "thinking…" });
           }
         });
-      } catch {
-        // Stream unavailable/broken -> plain request, transparently.
+      } catch (streamErr) {
+        // Retry via the plain endpoint ONLY when the stream never reached the
+        // server. Once streaming has begun the server may have already
+        // committed the turn, so re-running it would duplicate it — surface
+        // the failure via the outer catch instead.
+        if (!(streamErr instanceof StreamUnavailableError)) throw streamErr;
         r = await api.chat(text, sessionId);
       }
       setSessionId(r.session_id);

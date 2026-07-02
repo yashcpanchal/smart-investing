@@ -225,6 +225,18 @@ export interface CompileOpts {
   lookback?: string;
 }
 
+/** Thrown by `chatStream` only when the turn definitely did NOT execute
+ *  server-side (connection refused, non-2xx, or no response body). Safe for
+ *  the caller to retry via the non-streaming endpoint. Any failure after
+ *  streaming has begun is thrown as a plain Error instead — the server may
+ *  have already committed the turn, so re-running it would duplicate it. */
+export class StreamUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "StreamUnavailableError";
+  }
+}
+
 async function jpost<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -253,20 +265,27 @@ export const api = {
       live: true,
     }),
   /** Streamed chat turn. Calls `onEvent` per SSE frame and resolves with the
-   *  final ChatResponse. Throws if the stream is unavailable or errors — the
-   *  caller falls back to `api.chat`. */
+   *  final ChatResponse. Throws `StreamUnavailableError` when the turn never
+   *  reached the server (safe to retry via `api.chat`); throws a plain Error
+   *  for failures after streaming began (NOT safe to retry — the server may
+   *  have already committed the turn). */
   chatStream: async (
     message: string,
     session_id: string | null | undefined,
     onEvent: (e: ChatStreamEvent) => void,
   ): Promise<ChatResponse> => {
-    const r = await fetch(`${API_BASE}/api/chat/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: session_id ?? null, live: true }),
-    });
-    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
-    if (!r.body) throw new Error("streaming not supported");
+    let r: Response;
+    try {
+      r = await fetch(`${API_BASE}/api/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, session_id: session_id ?? null, live: true }),
+      });
+    } catch (e) {
+      throw new StreamUnavailableError("stream request failed", { cause: e });
+    }
+    if (!r.ok) throw new StreamUnavailableError(`${r.status}: ${await r.text()}`);
+    if (!r.body) throw new StreamUnavailableError("streaming not supported");
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
