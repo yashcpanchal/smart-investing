@@ -1,87 +1,63 @@
-"""Minimal Gemini client (REST via httpx — no SDK dependency).
+"""Gemini provider (REST via httpx — no SDK dependency).
 
-Used for the LLM-driven steps only (prompt -> StrategySpec, and later
-supplier/customer relation extraction). Everything else in the system is
-deterministic. Kept lean and low-volume to respect the free tier.
+Implements the provider-agnostic `LLMClient` contract, including native
+function-calling (`chat` with tools) and Google-Search-grounded answers.
+Kept lean and low-volume to respect the free tier.
 """
 
 from __future__ import annotations
 
-import json
-import time
-
-import httpx
-
 from smart_investing.config import settings
+from smart_investing.llm.base import (
+    ChatMessage,
+    LLMClient,
+    LLMResponse,
+    ToolCall,
+    ToolSpec,
+)
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
-_RETRY_STATUS = {429, 500, 502, 503, 504}  # transient / rate-limit
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
-class GeminiClient:
-    def __init__(self, api_key: str | None = None, model: str = "gemini-2.5-flash") -> None:
+class GeminiClient(LLMClient):
+    provider = "gemini"
+
+    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
         # None -> fall back to configured key; explicit "" -> force the deterministic
         # no-LLM path (used by tests and offline mode). Don't let "" leak the env key.
-        self.api_key = settings.gemini_api_key if api_key is None else api_key
-        self.model = model
-        # Short timeout: this is an interactive app. A slow/unavailable call should
-        # fall back to the deterministic path fast, not block a conversational turn.
-        self._client = httpx.Client(timeout=20.0)
-
-    @property
-    def available(self) -> bool:
-        return bool(self.api_key)
+        key = settings.gemini_api_key if api_key is None else api_key
+        super().__init__(api_key=key, model=model or DEFAULT_MODEL)
 
     def _generate(self, body: dict) -> dict:
-        """POST generateContent with fail-fast retry; returns the parsed response.
-
-        At most 3 attempts with short backoff (0.5s, 1s) — on the free tier a
-        sustained 429 drops to the caller's deterministic fallback in ~1.5s rather
-        than hanging the turn. Transient blips still get a couple of retries."""
         url = f"{GEMINI_BASE}/models/{self.model}:generateContent"
-        last: httpx.Response | None = None
-        for attempt in range(3):
-            try:
-                last = self._client.post(url, params={"key": self.api_key}, json=body)
-            except httpx.TransportError:
-                if attempt < 2:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise
-            if last.status_code in _RETRY_STATUS and attempt < 2:
-                time.sleep(0.5 * (attempt + 1))
-                continue
-            break
-        assert last is not None
-        last.raise_for_status()
-        return last.json()
+        return self._post_retry(url, body=body, params={"key": self.api_key})
 
-    def complete(
+    def chat(
         self,
-        prompt: str,
+        messages: list[ChatMessage],
+        *,
         system: str | None = None,
+        tools: list[ToolSpec] | None = None,
         json_mode: bool = False,
         temperature: float = 0.2,
-    ) -> str:
+    ) -> LLMResponse:
         body: dict = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [_to_content(m) for m in messages],
             # Disable "thinking" — for our short structured prompts it only adds
             # multi-second latency (and burns the free-tier rate limit) with no gain.
             "generationConfig": {"temperature": temperature, "thinkingConfig": {"thinkingBudget": 0}},
         }
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
-        if json_mode:
+        if tools:
+            body["tools"] = [{"functionDeclarations": [
+                {"name": t.name, "description": t.description, "parameters": t.parameters} for t in tools
+            ]}]
+        elif json_mode:  # responseMimeType and tools are mutually exclusive on Gemini
             body["generationConfig"]["responseMimeType"] = "application/json"
         data = self._generate(body)
-        try:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, IndexError):
-            return ""
-
-    def complete_json(self, prompt: str, system: str | None = None, temperature: float = 0.1) -> dict:
-        text = self.complete(prompt, system=system, json_mode=True, temperature=temperature)
-        return _loads_lenient(text)
+        return _parse_response(data)
 
     def complete_grounded(
         self, prompt: str, system: str | None = None, temperature: float = 0.3
@@ -90,7 +66,7 @@ class GeminiClient:
         sources is [{title, uri}]. Used for current industry/market context.
         Grounding needs "thinking" on, so we don't disable it here."""
         body: dict = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "tools": [{"google_search": {}}],
             "generationConfig": {"temperature": temperature},
         }
@@ -110,19 +86,49 @@ class GeminiClient:
         return text, sources
 
 
-def _loads_lenient(text: str) -> dict:
-    text = text.strip()
+def _to_content(m: ChatMessage) -> dict:
+    """Map a provider-neutral message onto Gemini's contents format."""
+    if m.role == "assistant":
+        parts: list[dict] = [{"text": m.content}] if m.content else []
+        parts += [{"functionCall": {"name": c.name, "args": c.arguments}} for c in m.tool_calls]
+        return {"role": "model", "parts": parts or [{"text": ""}]}
+    if m.role == "tool":
+        return {"role": "user", "parts": [
+            {"functionResponse": {
+                "name": r.call.name,
+                # Gemini requires an object; wrap scalars/strings.
+                "response": r.content if isinstance(r.content, dict) else {"result": r.content},
+            }}
+            for r in m.tool_results
+        ]}
+    return {"role": "user", "parts": [{"text": m.content}]}
+
+
+def _parse_response(data: dict) -> LLMResponse:
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # strip ``` fences / stray prose, grab the outermost object
-        t = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        start, end = t.find("{"), t.rfind("}")
-        if start != -1 and end != -1:
-            return json.loads(t[start : end + 1])
-        raise
+        cand = data["candidates"][0]
+        parts = cand["content"]["parts"]
+    except (KeyError, IndexError):
+        return LLMResponse()
+    text_bits: list[str] = []
+    calls: list[ToolCall] = []
+    for i, part in enumerate(parts):
+        if "text" in part:
+            text_bits.append(part["text"])
+        elif "functionCall" in part:
+            fc = part["functionCall"]
+            # Gemini doesn't issue call ids; synthesize one so results round-trip
+            # cleanly (and so a Claude-format replay of this history stays valid).
+            calls.append(ToolCall(name=fc.get("name", ""), arguments=fc.get("args") or {}, id=f"call_{i}"))
+    return LLMResponse(
+        text="".join(text_bits).strip(),
+        tool_calls=calls,
+        stop_reason=cand.get("finishReason", ""),
+    )
 
 
-def get_llm() -> GeminiClient | None:
-    client = GeminiClient()
-    return client if client.available else None
+def get_llm():
+    """Back-compat alias — the provider-aware factory lives in llm.factory."""
+    from smart_investing.llm.factory import get_llm as _factory_get_llm
+
+    return _factory_get_llm()
