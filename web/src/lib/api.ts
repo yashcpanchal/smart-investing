@@ -27,6 +27,7 @@ export interface HoldingExplanation {
   weight: number;
   role: string; // "direct" | "supply-chain"
   relevance: number;
+  smart_money?: number | null; // max 13F/insider sub-score when meaningful (>0.5)
   why: string;
 }
 
@@ -135,6 +136,7 @@ export interface ChatState {
   cash: number;
   pinned: string[];
   excluded: string[];
+  source_weights: Record<string, number>; // sec_13f / insider / news_sentiment / social
 }
 export interface ChatAction {
   op: string;
@@ -145,6 +147,17 @@ export interface ChatResponse {
   reply: string;
   actions: ChatAction[];
   researched?: string[]; // read tools the agent used before replying
+  added: string[];
+  removed: string[];
+  rebuilt: boolean;
+  proposal: Proposal | null;
+  state: ChatState;
+}
+
+// ---- direct knobs (sliders) ----
+export interface KnobsResponse {
+  session_id: string;
+  actions: ChatAction[];
   added: string[];
   removed: string[];
   rebuilt: boolean;
@@ -220,6 +233,11 @@ export const api = {
     jpost<Proposal>("/api/compile", { prompt, live: true, ...opts }),
   chat: (message: string, session_id?: string | null) =>
     jpost<ChatResponse>("/api/chat", { message, session_id: session_id ?? null, live: true }),
+  setKnobs: (sessionId: string, sourceWeights: Record<string, number>) =>
+    jpost<KnobsResponse>(`/api/session/${encodeURIComponent(sessionId)}/knobs`, {
+      source_weights: sourceWeights,
+      live: true,
+    }),
   graphSearch: (theme: string, top_k = 8) =>
     jget<SearchResponse>(`/api/graph/search?theme=${encodeURIComponent(theme)}&top_k=${top_k}`),
   graphNeighbors: (node: string, theme = "", limit = 12) =>
