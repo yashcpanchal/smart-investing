@@ -15,8 +15,42 @@ graph → cvxpy MPT optimizer (+ efficient frontier) → deterministic circuit
 breaker → PaperBroker execution → persisted portfolio. FastAPI backend, Next.js
 frontend.
 
-## Status (2026-07-01 — provider-agnostic LLM core + real agent loop)
+## Status (2026-07-02 — retrieval depth + smart money + streamed agent round)
 - Branch **`dev`**, pushed to origin (Yash is onboarding from this file).
+- **Three-stream round merged** (built by parallel worktree agents, reviewed by
+  a 4-lens Opus panel + fix loop; 155 tests):
+  - **Chunk-level dense retrieval** (`retrieval/chunk.py` + `index.py`): 10-Ks
+    are now embedded as ~400-word chunks (80 overlap), per-ticker score =
+    max-pooled chunk cosine. Fixes real truncation blindness — the MiniLM
+    embedder saw only the first 256 tokens of ~35-150k-char filings; BM25 stays
+    whole-doc; `query()` contract and the relevance-gate scale are unchanged.
+    `store.documents()` now has a deterministic ORDER BY.
+  - **Foreign filers**: ingest falls back 10-K → 20-F → 40-F (`si ingest
+    --forms`); 20-F Item 4/3.D extraction (live-validated on ARM), 40-F AIF
+    exhibit discovery via `EdgarClient.accession_index()` (live-validated on
+    Cameco). CCJ/DNN/ARM stop being text-less phantom graph nodes — run
+    `si ingest CCJ,DNN,ARM` to pull their filings in.
+  - **Smart money** (`data/smart_money.py`, `data/managers.py`): 13F-HR
+    holdings of 10 curated managers (CIKs live-verified) + Form 4 insider
+    trades into new `inst_holdings`/`insider_trades` DuckDB tables (`si
+    smart-money` ingests; per-manager pruning keeps exactly the latest 13F).
+    `compute_smart_money_scores(store)` → deterministic 0..1 rank-normalized
+    `smart_money_13f`/`smart_money_insider` (insider window anchored to max
+    store date, never now()). Blended into universe ORDERING via the
+    previously-dead `StrategySpec.source_weights` — the pure dense-cosine
+    relevance gate is untouched, so smart money can reorder but never re-admit
+    off-theme names. UI: "Signal weights" sliders in PortfolioPanel →
+    `POST /api/session/{id}/knobs` (LLM-free path; chat can also drive it via
+    the `set_source_weights` tool), smart-$ badge per holding.
+  - **Agent polish**: `POST /api/chat/stream` (SSE) streams live tool-use
+    progress; `researched` is now a rich trace `[{tool, args, preview}]`
+    rendered as pills; new `web_research` READ tool (grounded search when an
+    LLM key is present, graceful offline note otherwise); the client falls
+    back to plain `/api/chat` ONLY when the stream provably never executed
+    (`StreamUnavailableError`) — mid-stream failures surface as errors so a
+    committed turn is never re-run. Fixed a latent bug where `industry_brief`
+    imported a nonexistent `_loads_lenient` and silently un-grounded every
+    grounded industry analysis since it shipped.
 - **LLM layer rebuilt for plug-and-play providers**: everything types against
   `llm/base.py::LLMClient` (chat with native tool-calling + complete/
   complete_json/complete_grounded). `GeminiClient` (function-calling added) and
@@ -42,7 +76,8 @@ frontend.
   - **Per-holding reasoning**, a **per-stock detail panel** (yfinance facts), and
     an **industry-analysis panel** (supply-chain layers + Google-Search-grounded
     market commentary).
-- ~87 tests passing; ruff + tsc + eslint + `next build` clean.
+- **155 tests passing**; ruff + tsc + eslint + `next build` clean. All tests
+  offline/deterministic (fake LLMs, in-memory stores, inline EDGAR fixtures).
 - **Gemini key was rotated** (new one in `.env`). NOTE: heavy build/testing
   exhausted the free-tier quota — LLM features fall back to deterministic text
   until quota resets, then the grounded analysis + nicer phrasing light up.
@@ -65,7 +100,10 @@ Optional Robinhood client: `uv pip install -e ".[robinhood]"`.
 - `domain/types.py` — all pydantic contracts (StrategySpec, AssetUniverse, Order,
   AccountState, Proposal, enums). Money is float (documented MVP tradeoff).
 - `data/` — `prices.py` (yfinance + synthetic GBM), `edgar.py` (EDGAR client +
-  section extraction), `store.py` (DuckDB), `ingest.py`.
+  form-aware section extraction incl. 20-F/40-F + `accession_index`),
+  `store.py` (DuckDB; + `inst_holdings`/`insider_trades`), `ingest.py`
+  (multi-form fallback), `smart_money.py` (13F/Form 4 parse+ingest+scoring),
+  `managers.py` (curated 13F filer CIKs).
 - `quant/` — `optimizer.py` (max-Sharpe via Charnes-Cooper, min-vol, target-vol;
   `_convex.py` effective-cap + capped-simplex projection), `frontier`, `backtest`,
   `montecarlo`, `metrics`.
@@ -126,16 +164,21 @@ Optional Robinhood client: `uv pip install -e ".[robinhood]"`.
 shape. The app runtime only needs `GEMINI_API_KEY` (+ free EDGAR/yfinance).
 
 ## Pending / next
-1. Rotate GITHUB_TOKEN (Gemini key already rotated; add ANTHROPIC_API_KEY when
-   we get one — the factory flips to Claude automatically).
-2. Review `dev` → merge to `main`.
-3. Phase 11: desktop-OAuth a Robinhood agentic account, `broker.list_tools()`,
+1. Rotate GITHUB_TOKEN in `.env` (it is dead — 401; pushes/PRs use the
+   repo-local `.git/.git-credentials` PAT). Add ANTHROPIC_API_KEY when we get
+   one — the factory flips to Claude automatically.
+2. Merge the open `dev` → `main` PR after Yash reviews.
+3. Data refresh: `si ingest CCJ,DNN,ARM` (foreign filers now supported) and
+   `si smart-money` (populates 13F/insider tables) against live EDGAR.
+4. Phase 11: desktop-OAuth a Robinhood agentic account, `broker.list_tools()`,
    fill `_TOOL_MAP` + response parsing in `broker/robinhood.py`.
-4. Agent polish: stream replies token-by-token, richer tool trace in the UI,
-   let the agent call `complete_grounded` as a `web_research` read tool.
-5. Polish: chunked embeddings (recall), foreign filers (40-F/20-F), source-weight
-   configurator sliders, 13F/insider "smart money" scoring.
-6. Phases 12 (auth) / 13 (compliance) / 14 (deploy) / 15 (scale).
+5. Agent: token-level streaming inside provider `chat()` (SSE plumbing +
+   client state machine already exist); first-turn build progress events;
+   live-test `web_research` grounding once quota/keys allow.
+6. Smart money: news_sentiment/social weights have model+UI plumbing but no
+   data source; CUSIP-based 13F matching (name-bigram only today); multi-
+   quarter 13F history/deltas.
+7. Phases 12 (auth) / 13 (compliance) / 14 (deploy) / 15 (scale).
 
 ## Working style (founder preference)
 Run multiple confirmation subagents at each step; commit per phase to `dev` with
