@@ -60,8 +60,13 @@ def strategy(
 @app.command()
 def ingest(
     tickers: str = typer.Argument(..., help="Comma-separated tickers to ingest from EDGAR."),
+    forms: str = typer.Option(
+        "10-K,20-F,40-F",
+        help="Comma-separated annual-report forms to try, in order "
+        "(20-F/40-F cover foreign filers like ARM/CCJ).",
+    ),
 ) -> None:
-    """Pull latest 10-K Business/Risk sections from SEC EDGAR into the local store."""
+    """Pull latest annual-report Business/Risk sections from SEC EDGAR into the local store."""
     from rich.console import Console
 
     from smart_investing.data import ingest_companies
@@ -70,7 +75,8 @@ def ingest(
     # Windows (rich falls back to the console's cp1252 codec); ASCII markers are safe.
     console = Console()
     syms = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    summary, store = ingest_companies(syms)
+    form_list = [f.strip().upper() for f in forms.split(",") if f.strip()]
+    summary, store = ingest_companies(syms, forms=form_list)
     for t, sizes in summary["ok"]:
         console.print(f"[green][OK][/] {t}: " + ", ".join(f"{k} {n:,}c" for k, n in sizes.items()))
     for t, why in summary["skipped"]:

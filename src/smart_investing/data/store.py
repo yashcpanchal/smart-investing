@@ -103,12 +103,25 @@ class Store:
             "select ticker, cik, title, sic_description from companies order by ticker"
         ).fetchall()
 
+    # Deterministic order: business first (the cleanest thematic signal), then
+    # risk_factors, then any fallback 'full' text. Without an ORDER BY, DuckDB's
+    # row order is arbitrary, which made per-ticker text concatenation (and thus
+    # embeddings and retrieval ranks) nondeterministic across runs.
+    _DOC_ORDER = (
+        "order by ticker, "
+        "case section when 'business' then 0 when 'risk_factors' then 1 else 2 end, "
+        "accession"
+    )
+
     def documents(self, section: str | None = None) -> list[tuple]:
         if section:
             return self.con.execute(
-                "select ticker, section, text from documents where section = ?", [section]
+                f"select ticker, section, text from documents where section = ? {self._DOC_ORDER}",
+                [section],
             ).fetchall()
-        return self.con.execute("select ticker, section, text from documents").fetchall()
+        return self.con.execute(
+            f"select ticker, section, text from documents {self._DOC_ORDER}"
+        ).fetchall()
 
     def relations(self, origin: str | None = None) -> list[tuple]:
         """Returns (src, dst, rel, weight, origin)."""
