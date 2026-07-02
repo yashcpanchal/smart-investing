@@ -151,5 +151,10 @@ def test_chat_agent_read_tools_run_against_real_objects():
     r = c.post("/api/chat", json={"message": "why NVDA?", "session_id": sid, "live": False})
     assert r.status_code == 200
     b = r.json()
-    assert set(b["researched"]) == {"get_portfolio", "get_neighbors", "search_companies"}
+    assert {e["tool"] for e in b["researched"]} == {"get_portfolio", "get_neighbors", "search_companies"}
+    for e in b["researched"]:  # rich trace: args + a short result preview per call
+        assert isinstance(e["args"], dict)
+        assert isinstance(e["preview"], str) and len(e["preview"]) <= 200
+    nbrs = next(e for e in b["researched"] if e["tool"] == "get_neighbors")
+    assert nbrs["args"] == {"symbol": "NVDA"}
     assert b["reply"] == "NVDA leads; MU supplies the memory."

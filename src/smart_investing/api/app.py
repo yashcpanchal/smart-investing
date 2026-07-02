@@ -8,9 +8,17 @@ Robinhood MCP broker (Phase 11) needs no API change.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import queue
+from collections.abc import AsyncIterator, Callable
+
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from smart_investing.broker.paper import PaperBroker
 from smart_investing.data.store import Store
@@ -112,6 +120,14 @@ def _template_reply(changes: dict, proposal: Proposal | None) -> str:
             f"~{o.volatility * 100:.1f}% risk (Sharpe {o.sharpe:.2f})."
         )
     return lead or "Got it — tell me how you'd like to shape the portfolio."
+
+
+def _web_research(llm, query: str) -> dict:
+    """Grounded live-web lookup for the agent's web_research read tool."""
+    if llm is None or not getattr(llm, "available", False):
+        return {"note": "web research unavailable (no LLM configured)", "results": []}
+    text, sources = llm.complete_grounded(str(query))
+    return {"summary": text, "sources": sources}
 
 
 def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, default_cash: float = 10_000.0) -> FastAPI:
@@ -236,15 +252,17 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         def search_companies(query: str = "") -> dict:
             return {"matches": g.search(str(query), top_k=8)}
 
+        def web_research(query: str = "") -> dict:
+            return _web_research(state["llm"], query)
+
         return {"get_portfolio": get_portfolio, "get_stock_facts": get_stock_facts,
-                "get_neighbors": get_neighbors, "search_companies": search_companies}
+                "get_neighbors": get_neighbors, "search_companies": search_companies,
+                "web_research": web_research}
 
-    @app.post("/api/chat")
-    def chat(req: ChatRequest) -> dict:
-        """The conversation loop: interpret freeform feedback -> apply -> rebuild -> reply.
-
-        First message is the thesis. Subsequent messages refine it ("go deeper on
-        NVDA", "make it safer", "drop the consumer names", "why MU?")."""
+    def _chat_turn(req: ChatRequest, on_event: Callable[[dict], None] | None = None) -> dict:
+        """One full conversation turn: interpret freeform feedback -> apply ->
+        rebuild -> reply. Shared by /api/chat and /api/chat/stream so the two
+        endpoints cannot drift. `on_event` receives agent progress dicts."""
         session = sessions.get_or_create(req.session_id)
         session.messages.append({"role": "user", "text": req.message})
 
@@ -262,6 +280,7 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
                 req.message, context, state["llm"],
                 history=session.messages[:-1],  # current message passed separately
                 read_tools=_read_tools(session),
+                on_event=on_event,
             )
             actions = result["actions"]
             if any(a.get("op") == "set_theme" and a.get("value") for a in actions):
@@ -302,13 +321,56 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             "session_id": session.id,
             "reply": reply,
             "actions": actions,
-            "researched": result.get("researched", []),  # read tools the agent used
+            # read-tool trace: [{"tool", "args", "preview"}] per executed call
+            "researched": result.get("researched", []),
             "added": changes["added"],
             "removed": changes["removed"],
             "rebuilt": needs_rebuild and bool(session.theme),
             "proposal": session.proposal,
             "state": session.snapshot(),
         }
+
+    @app.post("/api/chat")
+    def chat(req: ChatRequest) -> dict:
+        """The conversation loop: interpret freeform feedback -> apply -> rebuild -> reply.
+
+        First message is the thesis. Subsequent messages refine it ("go deeper on
+        NVDA", "make it safer", "drop the consumer names", "why MU?")."""
+        return _chat_turn(req)
+
+    @app.post("/api/chat/stream")
+    async def chat_stream(req: ChatRequest) -> StreamingResponse:
+        """Same turn as /api/chat, streamed as server-sent events: agent progress
+        (round / tool_call / tool_result / queued) while the turn runs on a worker
+        thread, then a single {"type": "final", ...} frame carrying the exact
+        /api/chat payload."""
+        q: queue.Queue = queue.Queue()
+        _DONE = object()
+
+        def emit(event: dict) -> None:
+            q.put(event)
+
+        def worker() -> None:
+            try:
+                payload = _chat_turn(req, on_event=emit)
+                q.put({"type": "final", **jsonable_encoder(payload)})
+            except Exception as e:  # surfaced to the stream, not a 500 mid-stream
+                q.put({"type": "error", "detail": str(e)[:500]})
+            finally:
+                q.put(_DONE)
+
+        async def gen() -> AsyncIterator[str]:
+            task = asyncio.ensure_future(run_in_threadpool(worker))
+            try:
+                while True:
+                    item = await run_in_threadpool(q.get)
+                    if item is _DONE:
+                        break
+                    yield f"data: {json.dumps(item, default=str)}\n\n"
+            finally:
+                await task
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
 
     @app.post("/api/compile")
     def compile_(req: CompileRequest) -> Proposal:
