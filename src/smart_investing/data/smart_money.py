@@ -14,9 +14,6 @@ Everything network-facing is thin; the parsers and the scorer are pure and
 offline-testable. Scoring is deterministic: the insider window is anchored to
 the max transaction date IN THE STORE, never wall-clock now().
 
-NOTE: `fetch_accession_index` is a module-level helper (taking the client)
-rather than an EdgarClient method — a sibling branch adds `accession_index`
-to EdgarClient this round; the merger unifies the two.
 """
 
 from __future__ import annotations
@@ -28,8 +25,6 @@ from datetime import date, timedelta
 
 from smart_investing.data.managers import DEFAULT_MANAGERS
 from smart_investing.retrieval.graph import name_keys
-
-INDEX_JSON_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/index.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -167,10 +162,8 @@ def filings_of_form(client, cik: int, form: str, limit: int | None = None) -> li
 
 
 def fetch_accession_index(client, cik: int, accession: str) -> dict:
-    """index.json of one accession's archive folder (lists every member file).
-    Module-level (not an EdgarClient method) — see module docstring."""
-    url = INDEX_JSON_URL.format(cik=cik, acc=accession.replace("-", ""))
-    return client._get(url).json()
+    """index.json of one accession's archive folder (lists every member file)."""
+    return client.accession_index(cik, accession)
 
 
 def infotable_candidates(index_json: dict) -> list[str]:

@@ -71,7 +71,7 @@ def test_agent_executes_read_tool_then_replies():
     )
     assert seen.get("hit") is True
     assert out["reply"].startswith("NVDA is 40%")
-    assert out["researched"] == ["get_portfolio"]
+    assert out["researched"] == [{"tool": "get_portfolio", "args": {}, "preview": "{'holdings': []}"}]
     assert out["actions"] == [{"op": "none"}]
     # round 2 must carry the assistant tool-call turn + the tool result turn
     roles = [m.role for m in fake.calls[1]["messages"]]
@@ -136,6 +136,56 @@ def test_agent_last_round_withholds_tools():
                     read_tools={"get_portfolio": lambda **kw: {"holdings": []}}, max_rounds=4)
     assert out["reply"] == "done looking."
     assert fake.calls[-1]["tools"] is None  # final round forces a reply
+
+
+def test_agent_rich_trace_and_preview_cap():
+    fake = FakeLLM([
+        LLMResponse(tool_calls=[ToolCall(name="get_stock_facts", arguments={"symbol": "MU"}, id="c1")]),
+        LLMResponse(text="MU is the memory play."),
+    ])
+    big = {"summary": "x" * 1000}
+    out = run_agent("what does MU do?", _ctx(), fake, read_tools={"get_stock_facts": lambda **kw: big})
+    (entry,) = out["researched"]
+    assert entry["tool"] == "get_stock_facts"
+    assert entry["args"] == {"symbol": "MU"}
+    assert len(entry["preview"]) <= 200
+
+
+def test_agent_on_event_ordering_and_shapes():
+    fake = FakeLLM([
+        LLMResponse(tool_calls=[
+            ToolCall(name="get_portfolio", arguments={}, id="c1"),
+            ToolCall(name="set_risk", arguments={"value": "low"}, id="c2"),
+        ]),
+        LLMResponse(text="Checked and dialed it down."),
+    ])
+    events: list[dict] = []
+    out = run_agent(
+        "make it safer after checking", _ctx(), fake,
+        read_tools={"get_portfolio": lambda **kw: {"holdings": []}},
+        on_event=events.append,
+    )
+    assert out["reply"]
+    types = [e["type"] for e in events]
+    assert types == ["round", "tool_call", "tool_result", "queued", "round"]
+    assert events[0] == {"type": "round", "round": 0}
+    assert events[1] == {"type": "tool_call", "tool": "get_portfolio", "args": {}}
+    assert events[2]["tool"] == "get_portfolio" and "holdings" in events[2]["preview"]
+    assert events[3] == {"type": "queued", "tool": "set_risk"}
+
+
+def test_agent_on_event_exception_never_breaks_the_turn():
+    def bad_listener(e: dict) -> None:
+        raise RuntimeError("listener broke")
+    fake = FakeLLM([
+        LLMResponse(tool_calls=[ToolCall(name="get_portfolio", arguments={}, id="c1")]),
+        LLMResponse(text="All good."),
+    ])
+    out = run_agent("check it", _ctx(), fake,
+                    read_tools={"get_portfolio": lambda **kw: {"holdings": []}},
+                    on_event=bad_listener)
+    assert out["reply"] == "All good."
+    assert out["researched"][0]["tool"] == "get_portfolio"
 
 
 # --------------------------------------------------- gemini wire format

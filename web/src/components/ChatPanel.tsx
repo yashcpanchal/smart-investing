@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { ResearchEntry } from "../lib/api";
 
 export interface Msg {
   role: "user" | "assistant";
   text: string;
-  researched?: string[]; // read tools the agent used before replying
+  researched?: ResearchEntry[]; // read-tool trace the agent produced before replying
+}
+
+export interface ChatProgress {
+  researched: ResearchEntry[]; // calls seen so far this turn (preview fills in as results land)
+  status: string; // "thinking…" | "researching…" | "queuing changes…"
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -13,7 +19,45 @@ const TOOL_LABELS: Record<string, string> = {
   get_stock_facts: "looked up company facts",
   get_neighbors: "walked the supply chain",
   search_companies: "searched SEC filings",
+  web_research: "searched the web",
 };
+
+/** The one argument worth showing next to the label (ticker or query). */
+function keyArg(e: ResearchEntry): string {
+  const v = e.args?.symbol ?? e.args?.query;
+  return typeof v === "string" && v ? (v.length > 32 ? v.slice(0, 32) + "…" : v) : "";
+}
+
+/** Dedupe for display by (tool + args) while keeping first-seen order. */
+function dedupe(entries: ResearchEntry[]): ResearchEntry[] {
+  const seen = new Map<string, ResearchEntry>();
+  for (const e of entries) {
+    const k = `${e.tool}:${JSON.stringify(e.args ?? {})}`;
+    if (!seen.has(k)) seen.set(k, e);
+  }
+  return [...seen.values()];
+}
+
+function ResearchPills({ entries }: { entries: ResearchEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <div className="mb-1 flex flex-wrap gap-1 px-1">
+      {dedupe(entries).map((e, i) => {
+        const arg = keyArg(e);
+        return (
+          <span
+            key={i}
+            title={e.preview || undefined}
+            className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-2 py-0.5 text-[10px] text-zinc-500"
+          >
+            🔍 {TOOL_LABELS[e.tool] ?? e.tool}
+            {arg && <span className="text-zinc-400"> · {arg}</span>}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 const EXAMPLES = [
   "The AI data-center buildout: chips, power, and cooling",
@@ -34,11 +78,13 @@ export function ChatPanel({
   onSend,
   busy,
   started,
+  progress = null,
 }: {
   messages: Msg[];
   onSend: (text: string) => void;
   busy: boolean;
   started: boolean;
+  progress?: ChatProgress | null;
 }) {
   const [text, setText] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
@@ -81,11 +127,7 @@ export function ChatPanel({
 
         {messages.map((m, i) => (
           <div key={i} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
-            {m.role === "assistant" && (m.researched?.length ?? 0) > 0 && (
-              <div className="mb-1 px-1 text-[10px] italic text-zinc-500">
-                🔍 {[...new Set(m.researched)].map((t) => TOOL_LABELS[t] ?? t).join(" · ")}
-              </div>
-            )}
+            {m.role === "assistant" && <ResearchPills entries={m.researched ?? []} />}
             <div
               className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
                 m.role === "user"
@@ -99,9 +141,10 @@ export function ChatPanel({
         ))}
 
         {busy && (
-          <div className="flex justify-start">
+          <div className="flex flex-col items-start">
+            <ResearchPills entries={progress?.researched ?? []} />
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 px-3.5 py-2 text-sm text-zinc-400">
-              <span className="dot">●</span> thinking…
+              <span className="dot">●</span> {progress?.status ?? "thinking…"}
             </div>
           </div>
         )}

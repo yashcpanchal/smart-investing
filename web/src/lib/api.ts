@@ -142,11 +142,16 @@ export interface ChatAction {
   op: string;
   [k: string]: unknown;
 }
+export interface ResearchEntry {
+  tool: string;
+  args: Record<string, unknown>;
+  preview: string; // first ~200 chars of the tool result
+}
 export interface ChatResponse {
   session_id: string;
   reply: string;
   actions: ChatAction[];
-  researched?: string[]; // read tools the agent used before replying
+  researched?: ResearchEntry[]; // read-tool trace: one entry per executed call
   added: string[];
   removed: string[];
   rebuilt: boolean;
@@ -164,6 +169,15 @@ export interface KnobsResponse {
   proposal: Proposal | null;
   state: ChatState;
 }
+
+// SSE progress frames from /api/chat/stream; "final" carries the ChatResponse.
+export type ChatStreamEvent =
+  | { type: "round"; round: number }
+  | { type: "tool_call"; tool: string; args: Record<string, unknown> }
+  | { type: "tool_result"; tool: string; preview: string }
+  | { type: "queued"; tool: string }
+  | ({ type: "final" } & ChatResponse)
+  | { type: "error"; detail: string };
 
 // ---- per-stock detail ----
 export interface StockMetric {
@@ -238,6 +252,45 @@ export const api = {
       source_weights: sourceWeights,
       live: true,
     }),
+  /** Streamed chat turn. Calls `onEvent` per SSE frame and resolves with the
+   *  final ChatResponse. Throws if the stream is unavailable or errors — the
+   *  caller falls back to `api.chat`. */
+  chatStream: async (
+    message: string,
+    session_id: string | null | undefined,
+    onEvent: (e: ChatStreamEvent) => void,
+  ): Promise<ChatResponse> => {
+    const r = await fetch(`${API_BASE}/api/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, session_id: session_id ?? null, live: true }),
+    });
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    if (!r.body) throw new Error("streaming not supported");
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let final: ChatResponse | null = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const ev = JSON.parse(line.slice(6)) as ChatStreamEvent;
+          onEvent(ev);
+          if (ev.type === "final") final = ev;
+          if (ev.type === "error") throw new Error(ev.detail);
+        }
+      }
+    }
+    if (!final) throw new Error("stream ended without a final frame");
+    return final;
+  },
   graphSearch: (theme: string, top_k = 8) =>
     jget<SearchResponse>(`/api/graph/search?theme=${encodeURIComponent(theme)}&top_k=${top_k}`),
   graphNeighbors: (node: string, theme = "", limit = 12) =>

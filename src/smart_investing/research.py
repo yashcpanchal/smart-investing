@@ -8,7 +8,7 @@ the panels still render when offline or rate-limited).
 
 from __future__ import annotations
 
-from smart_investing.llm.base import LLMClient
+from smart_investing.llm.base import LLMClient, loads_lenient
 
 _INFO_CACHE: dict[str, dict] = {}
 
@@ -202,9 +202,7 @@ def industry_brief(theme: str, graph, *, llm: LLMClient | None = None) -> dict:
         )
         try:
             text, sources = llm.complete_grounded(prompt, system=_IND_SYSTEM)
-            from smart_investing.llm.gemini import _loads_lenient
-
-            data = _loads_lenient(text)
+            data = loads_lenient(text)
             analysis = str(data.get("state") or analysis).strip()
             tailwinds = [str(b).strip() for b in (data.get("tailwinds") or []) if str(b).strip()][:3]
             risks = [str(b).strip() for b in (data.get("risks") or []) if str(b).strip()][:3]
