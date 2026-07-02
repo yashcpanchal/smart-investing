@@ -90,6 +90,56 @@ def ingest(
     store.close()
 
 
+@app.command(name="smart-money")
+def smart_money(
+    per_ticker: int = typer.Option(8, help="Recent Form 4 filings pulled per corpus ticker."),
+    skip_form4: bool = typer.Option(False, help="Skip Form 4 insider ingestion."),
+    skip_13f: bool = typer.Option(False, help="Skip 13F institutional ingestion."),
+) -> None:
+    """Ingest 'smart money' signals from SEC EDGAR into the local store:
+    Form 4 insider trades for every corpus ticker + latest 13F-HR holdings of
+    the curated institutional managers. Run `si ingest` first."""
+    from rich.console import Console
+
+    from smart_investing.data.edgar import EdgarClient
+    from smart_investing.data.managers import DEFAULT_MANAGERS
+    from smart_investing.data.smart_money import ingest_13f, ingest_insider_trades
+    from smart_investing.data.store import Store
+
+    console = Console()
+    store = Store()
+    tickers = [row[0] for row in store.companies()]
+    if not tickers:
+        console.print("[yellow]Store has no companies — run `si ingest TICKERS` first.[/]")
+        store.close()
+        raise typer.Exit(1)
+
+    client = EdgarClient()
+    try:
+        if not skip_form4:
+            res = ingest_insider_trades(store, tickers, client=client, per_ticker_limit=per_ticker)
+            for t, n in res["ok"]:
+                console.print(f"[green][OK][/] {t}: {n} insider transactions")
+            for t, why in res["errors"]:
+                console.print(f"[red][XX][/] {t}: {why}")
+        if not skip_13f:
+            res = ingest_13f(store, client=client, managers=DEFAULT_MANAGERS)
+            for name, matched, total in res["ok"]:
+                console.print(f"[green][OK][/] {name}: {matched}/{total} holdings matched to corpus")
+            for name, why in res["errors"]:
+                console.print(f"[red][XX][/] {name}: {why}")
+        console.print(
+            f"\nStore: {store.count('insider_trades')} insider trades, "
+            f"{store.count('inst_holdings')} institutional holdings"
+        )
+    except Exception as e:  # offline / EDGAR unreachable — fail politely
+        console.print(f"[red]EDGAR unreachable ({str(e)[:120]}). Are you online?[/]")
+        raise typer.Exit(1) from None
+    finally:
+        client.close()
+        store.close()
+
+
 @app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Run the HTTP API (FastAPI). Ingest a corpus first with `si ingest`."""

@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from smart_investing.broker.paper import PaperBroker
+from smart_investing.data.smart_money import compute_smart_money_scores
 from smart_investing.data.store import Store
 from smart_investing.domain.types import Proposal
 from smart_investing.execution.executor import execute_proposal
@@ -37,6 +38,14 @@ class ChatRequest(BaseModel):
     live: bool = True
 
 
+class KnobsRequest(BaseModel):
+    """Direct-manipulation controls (the UI sliders) — no language in the loop.
+    Extensible: today only source_weights, e.g. {"sec_13f": 0.7, "insider": 0.4}."""
+
+    source_weights: dict[str, float] | None = None
+    live: bool = True
+
+
 class CompileRequest(BaseModel):
     prompt: str
     initial_cash: float = 10_000.0
@@ -50,7 +59,7 @@ class CompileRequest(BaseModel):
 
 
 _KNOB_OPS = {"set_risk": "risk", "set_breadth": "breadth", "set_supply_chain": "supply_chain"}
-_REBUILD_OPS = {"set_theme", "add", "remove", "expand", "set_lookback", "set_cash", *_KNOB_OPS}
+_REBUILD_OPS = {"set_theme", "add", "remove", "expand", "set_lookback", "set_cash", "set_source_weights", *_KNOB_OPS}
 _EXPAND_LIMIT = 4
 
 
@@ -73,6 +82,15 @@ def _apply_actions(session: Session, actions: list[dict], graph: GraphService) -
             nbrs = graph.neighbors(str(a["symbol"]).upper(), theme=session.theme, limit=_EXPAND_LIMIT * 3)
             picks = [n["symbol"] for n in nbrs if direction == "all" or n["direction"] == direction][:_EXPAND_LIMIT]
             added += session.pin(picks)
+        elif op == "set_source_weights" and isinstance(a.get("value"), dict):
+            for k, v in a["value"].items():
+                if k not in session.source_weights:
+                    continue
+                try:
+                    session.source_weights[k] = min(1.0, max(0.0, float(v)))
+                except (TypeError, ValueError):
+                    continue
+            changed.append("source_weights")
         elif op in _KNOB_OPS and a.get("value"):
             session.answers[_KNOB_OPS[op]] = str(a["value"])
             changed.append(_KNOB_OPS[op])
@@ -103,6 +121,8 @@ def _template_reply(changes: dict, proposal: Proposal | None) -> str:
         bits.append("changed the look-back window")
     if "theme" in changes["changed"]:
         bits.append("updated the thesis")
+    if "source_weights" in changes["changed"]:
+        bits.append("reweighted the evidence signals")
     lead = ("I " + ", ".join(bits) + ". ") if bits else ""
     if proposal is not None:
         held = sum(1 for w in proposal.target_weights.values() if w > 0.005)
@@ -122,7 +142,10 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    state = {"store": store, "repo": repo, "broker": broker, "llm": llm, "embedder": embedder, "graph": None}
+    state = {
+        "store": store, "repo": repo, "broker": broker, "llm": llm, "embedder": embedder,
+        "graph": None, "smart_money": None,
+    }
     sessions = SessionManager()
 
     def get_store() -> Store:
@@ -134,6 +157,13 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
         if state["graph"] is None:
             state["graph"] = GraphService(get_store(), embedder=state["embedder"]).build()
         return state["graph"]
+
+    def get_smart_money() -> dict:
+        """Per-process cache of the deterministic 13F/insider scores (same
+        discipline as get_graph(): computed lazily once from the store)."""
+        if state["smart_money"] is None:
+            state["smart_money"] = compute_smart_money_scores(get_store())
+        return state["smart_money"]
 
     def get_repo() -> StateRepo:
         if state["repo"] is None:
@@ -306,6 +336,52 @@ def create_app(store=None, repo=None, broker=None, llm=None, embedder=None, *, d
             "added": changes["added"],
             "removed": changes["removed"],
             "rebuilt": needs_rebuild and bool(session.theme),
+            "proposal": session.proposal,
+            "state": session.snapshot(),
+        }
+
+    @app.post("/api/session/{session_id}/knobs")
+    def knobs(session_id: str, req: KnobsRequest) -> dict:
+        """Direct knob manipulation (the sliders): apply the same deterministic
+        action path chat uses, then ONE rebuild with the cached retrieval index.
+        Same response shape as /api/chat minus reply/researched."""
+        session = sessions.get(session_id)
+        if session is None:
+            raise HTTPException(404, "session not found")
+        actions: list[dict] = []
+        if req.source_weights is not None:
+            actions.append({"op": "set_source_weights", "value": req.source_weights})
+        changes = _apply_actions(session, actions, get_graph())
+
+        rebuilt = bool(actions) and bool(session.theme)
+        if rebuilt:
+            if session.base_spec is None:
+                session.base_spec = compile_spec(session.theme, llm=state["llm"])
+            idx, meta = get_graph().retrieval()
+            proposal = compile_strategy(
+                session.theme,
+                get_store(),
+                live=req.live,
+                initial_cash=session.cash,
+                account=get_broker().get_account_state(),
+                llm=state["llm"],
+                embedder=state["embedder"],
+                answers=session.compile_answers(),
+                lookback=session.lookback,
+                spec=session.base_spec,
+                index=idx,
+                meta=meta,
+                smart_money=get_smart_money(),
+            )
+            get_repo().save_proposal(proposal)
+            session.proposal = proposal
+
+        return {
+            "session_id": session.id,
+            "actions": actions,
+            "added": changes["added"],
+            "removed": changes["removed"],
+            "rebuilt": rebuilt,
             "proposal": session.proposal,
             "state": session.snapshot(),
         }

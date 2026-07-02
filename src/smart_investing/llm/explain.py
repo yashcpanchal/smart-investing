@@ -51,6 +51,19 @@ def _build_holdings(universe: AssetUniverse, held: dict[str, float]) -> list[Hol
             if direct
             else f"Supply-chain exposure surfaced from filings — {a.rationale if a else 'indirect link'}."
         )
+        # smart-money signal (13F institutional accumulation / insider buying):
+        # surfaced only when meaningful (>0.5 rank score), templated + deterministic
+        s13f = a.scores.get("smart_money_13f", 0.0) if a else 0.0
+        sins = a.scores.get("smart_money_insider", 0.0) if a else 0.0
+        smart = None
+        if max(s13f, sins) > 0.5:
+            smart = round(max(s13f, sins), 4)
+            clauses = []
+            if s13f > 0.5:
+                clauses.append("institutions have been accumulating it (13F filings)")
+            if sins > 0.5:
+                clauses.append("insiders have been buying recently (Form 4)")
+            why += " Smart money: " + " and ".join(clauses) + "."
         rows.append(
             HoldingExplanation(
                 symbol=sym,
@@ -58,6 +71,7 @@ def _build_holdings(universe: AssetUniverse, held: dict[str, float]) -> list[Hol
                 weight=round(w, 4),
                 role=("direct" if direct else "supply-chain"),
                 relevance=round(rel, 4),
+                smart_money=smart,
                 why=why,
             )
         )

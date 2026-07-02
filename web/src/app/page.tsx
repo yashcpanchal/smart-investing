@@ -145,7 +145,17 @@ export default function Home() {
               <GraphCanvas theme={theme} pinned={pinned} onAdd={addToPortfolio} onRemove={removeFromPortfolio} busy={busy} />
             </Pane>
             <Pane show={view === "portfolio"}>
-              <PortfolioPanel proposal={proposal} busy={busy} onRemove={removeFromPortfolio} />
+              <PortfolioPanel
+                proposal={proposal}
+                busy={busy}
+                onRemove={removeFromPortfolio}
+                sessionId={sessionId}
+                chatState={chatState}
+                onKnobs={(p, s) => {
+                  if (p) setProposal(p);
+                  setChatState(s);
+                }}
+              />
             </Pane>
             {visited.has("stocks") && (
               <Pane show={view === "stocks"}>

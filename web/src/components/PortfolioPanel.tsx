@@ -1,6 +1,6 @@
 "use client";
 
-import { api, money2, pct, type ApproveResult, type Proposal } from "../lib/api";
+import { api, money2, pct, type ApproveResult, type ChatState, type Proposal } from "../lib/api";
 import { AllocationChart } from "./AllocationChart";
 import { Findings } from "./Findings";
 import { FrontierChart } from "./FrontierChart";
@@ -10,10 +10,16 @@ export function PortfolioPanel({
   proposal,
   busy,
   onRemove,
+  sessionId,
+  chatState,
+  onKnobs,
 }: {
   proposal: Proposal | null;
   busy: boolean;
   onRemove: (symbol: string) => void;
+  sessionId?: string | null;
+  chatState?: ChatState | null;
+  onKnobs?: (proposal: Proposal | null, state: ChatState) => void;
 }) {
   const [approving, setApproving] = useState(false);
   const [approved, setApproved] = useState<ApproveResult | null>(null);
@@ -80,6 +86,17 @@ export function PortfolioPanel({
         />
       </div>
 
+      {sessionId && chatState && onKnobs && (
+        <SignalWeights
+          // remount when the session's weights change elsewhere (chat, reset)
+          key={`${chatState.source_weights?.sec_13f}-${chatState.source_weights?.insider}`}
+          sessionId={sessionId}
+          chatState={chatState}
+          busy={busy}
+          onKnobs={onKnobs}
+        />
+      )}
+
       {exp && <Findings explanation={exp} />}
 
       {held.length > 0 && (
@@ -102,6 +119,14 @@ export function PortfolioPanel({
                   >
                     {h.role}
                   </span>
+                  {h.smart_money != null && (
+                    <span
+                      title={`Smart money score ${(h.smart_money * 100).toFixed(0)}% — institutions/insiders buying`}
+                      className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                    >
+                      smart $
+                    </span>
+                  )}
                   <span className="w-12 text-right text-xs font-medium tabular-nums text-zinc-100">{pct(h.weight)}</span>
                   <button
                     onClick={() => onRemove(h.symbol)}
@@ -148,6 +173,105 @@ export function PortfolioPanel({
         )}
       </div>
     </div>
+  );
+}
+
+const DEFAULT_WEIGHTS = { sec_13f: 0.5, insider: 0.2 };
+
+function SignalWeights({
+  sessionId,
+  chatState,
+  busy,
+  onKnobs,
+}: {
+  sessionId: string;
+  chatState: ChatState;
+  busy: boolean;
+  onKnobs: (proposal: Proposal | null, state: ChatState) => void;
+}) {
+  const remote13f = chatState.source_weights?.sec_13f ?? DEFAULT_WEIGHTS.sec_13f;
+  const remoteInsider = chatState.source_weights?.insider ?? DEFAULT_WEIGHTS.insider;
+  // initial values only — the parent remounts this component (via key) when
+  // the session's weights change through another path
+  const [w13f, setW13f] = useState(remote13f);
+  const [wInsider, setWInsider] = useState(remoteInsider);
+  const [saving, setSaving] = useState(false);
+
+  async function commit() {
+    if (saving || (w13f === remote13f && wInsider === remoteInsider)) return;
+    setSaving(true);
+    try {
+      const r = await api.setKnobs(sessionId, { sec_13f: w13f, insider: wInsider });
+      onKnobs(r.proposal, r.state);
+    } catch {
+      // keep the local values; the next release retries
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-medium text-zinc-200">Signal weights</h3>
+        <span className="text-[10px] text-zinc-500">{saving ? "reweighting…" : "smart money"}</span>
+      </div>
+      <Slider
+        label="13F institutions"
+        hint="quarterly holdings of Berkshire, RenTech & co"
+        value={w13f}
+        disabled={busy || saving}
+        onChange={setW13f}
+        onCommit={commit}
+      />
+      <Slider
+        label="Insider buys"
+        hint="recent open-market Form 4 purchases"
+        value={wInsider}
+        disabled={busy || saving}
+        onChange={setWInsider}
+        onCommit={commit}
+      />
+    </div>
+  );
+}
+
+function Slider({
+  label,
+  hint,
+  value,
+  disabled,
+  onChange,
+  onCommit,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  disabled: boolean;
+  onChange: (v: number) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <label className="mb-2 block last:mb-0">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] text-zinc-400" title={hint}>
+          {label}
+        </span>
+        <span className="text-[11px] tabular-nums text-zinc-300">{value.toFixed(2)}</span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onPointerUp={onCommit}
+        onKeyUp={onCommit}
+        className="mt-1 w-full accent-cyan-400"
+      />
+    </label>
   );
 }
 
