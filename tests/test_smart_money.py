@@ -11,6 +11,8 @@ from smart_investing.data.smart_money import (
     build_name_key_map,
     compute_smart_money_scores,
     infotable_candidates,
+    ingest_13f,
+    ingest_insider_trades,
     match_issuer,
     parse_13f_infotable,
     parse_form4,
@@ -235,6 +237,103 @@ def test_universe_insider_weight_reorders_but_never_readmits_gated_names():
     heavy_direct = [a.symbol for a in heavy.assets if a.degree == 1]
     assert heavy_direct[0] == trailing  # reordered to the top
     assert {a.symbol for a in heavy.assets} == base_syms  # same admitted set — KO still out
+
+
+# ------------------------------------------------------- offline ingestion
+class _FakeEdgar:
+    """Offline EDGAR stand-in: canned submissions / accession-index / document
+    responses keyed the same way EdgarClient serves them."""
+
+    def __init__(self, filings_by_cik: dict, index_by_accession: dict, docs: dict) -> None:
+        self._filings = filings_by_cik  # cik -> list of recent-filing dicts
+        self._index = index_by_accession  # accession -> index.json dict
+        self._docs = docs  # (accession, doc name) -> raw XML text
+
+    def submissions(self, cik: int) -> dict:
+        filings = self._filings.get(int(cik), [])
+        return {"filings": {"recent": {
+            "form": [f["form"] for f in filings],
+            "accessionNumber": [f["accession"] for f in filings],
+            "primaryDocument": [f["primary_doc"] for f in filings],
+            "filingDate": [f["filing_date"] for f in filings],
+            "reportDate": [f.get("report_date", "") for f in filings],
+        }}}
+
+    def accession_index(self, cik: int, accession: str) -> dict:
+        return self._index[accession]
+
+    def filing_html(self, cik: int, accession: str, doc: str) -> str:
+        return self._docs[(accession, doc)]
+
+
+def _13f_client(cik: int, accession: str, report_date: str, infotable_xml: str) -> _FakeEdgar:
+    return _FakeEdgar(
+        filings_by_cik={cik: [{
+            "form": "13F-HR", "accession": accession, "primary_doc": "primary_doc.xml",
+            "filing_date": report_date, "report_date": report_date,
+        }]},
+        index_by_accession={accession: {"directory": {"item": [
+            {"name": "primary_doc.xml", "size": "3000"},
+            {"name": "infotable.xml", "size": "900000"},
+        ]}}},
+        docs={(accession, "infotable.xml"): infotable_xml},
+    )
+
+
+def test_ingest_13f_offline_end_to_end():
+    s = _store()
+    client = _13f_client(1067983, "0001-26-000001", "2026-03-31", INFOTABLE_NAMESPACED)
+    res = ingest_13f(s, client=client, managers=[("Test Mgr", 1067983)])
+    assert res["errors"] == []
+    assert res["ok"] == [("Test Mgr", 1, 2)]  # NVDA matched; OBSCURE... dropped
+    rows = s.inst_holdings()
+    assert len(rows) == 1
+    (mgr_cik, mgr_name, ticker, cusip, issuer, value, shares, period, accession) = rows[0]
+    assert (mgr_cik, mgr_name, ticker) == (1067983, "Test Mgr", "NVDA")
+    assert (cusip, value, shares) == ("67066G104", 5e9, 4e7)
+    assert (period, accession) == ("2026-03-31", "0001-26-000001")
+
+
+def test_ingest_13f_reingest_replaces_prior_quarter():
+    s = _store()
+    managers = [("Test Mgr", 1067983)]
+    ingest_13f(s, client=_13f_client(1067983, "0001-26-000001", "2026-03-31", INFOTABLE_NAMESPACED),
+               managers=managers)
+    # next quarter: a NEW accession whose info table holds only Micron
+    ingest_13f(s, client=_13f_client(1067983, "0001-26-000002", "2026-06-30", INFOTABLE_PLAIN),
+               managers=managers)
+    rows = s.inst_holdings()
+    assert len(rows) == 1  # prior quarter's NVDA row is gone, not accumulated
+    assert rows[0][2] == "MU"
+    assert rows[0][8] == "0001-26-000002"
+    # scoring therefore sees a single quarter per manager
+    assert "NVDA" not in compute_smart_money_scores(s)
+
+
+def test_ingest_insider_trades_offline_end_to_end():
+    s = _store()  # NVDA has CIK 1045810 in the corpus
+    client = _FakeEdgar(
+        filings_by_cik={1045810: [
+            {"form": "4", "accession": "0004-26-000001",
+             "primary_doc": "xslF345X05/form4.xml", "filing_date": "2026-06-02",
+             "report_date": "2026-06-01"},
+            {"form": "10-K", "accession": "0004-26-000009",
+             "primary_doc": "annual.htm", "filing_date": "2026-01-15"},
+        ]},
+        index_by_accession={},
+        docs={("0004-26-000001", "form4.xml"): FORM4_NAMESPACED},
+    )
+    res = ingest_insider_trades(s, ["NVDA"], client=client)
+    assert res["errors"] == []
+    assert res["ok"] == [("NVDA", 2)]  # both non-derivative rows landed
+    trades = s.insider_trades()
+    assert len(trades) == 2
+    assert {t[0] for t in trades} == {"AAPL"}  # symbol comes from the Form 4 itself
+    by_code = {t[8]: t for t in trades}
+    assert set(by_code) == {"P", "S"}
+    buy = by_code["P"]
+    assert (buy[3], buy[4], buy[7]) == ("Doe Jane", True, "2026-05-01")
+    assert (buy[9], buy[10], buy[11]) == (1000.0, 150.25, "A")
 
 
 # --------------------------------------------------- session + agent plumbing

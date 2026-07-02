@@ -135,6 +135,11 @@ class Store:
             [manager_cik, manager_name, ticker.upper(), cusip, issuer_name, value_usd, shares, period_of_report, accession],
         )
 
+    def clear_inst_holdings(self, manager_cik: int) -> None:
+        """Drop one manager's rows so a fresh 13F fully replaces the prior
+        quarter (the table holds exactly one filing per manager)."""
+        self.con.execute("delete from inst_holdings where manager_cik = ?", [manager_cik])
+
     def upsert_insider_trade(
         self,
         ticker: str,
