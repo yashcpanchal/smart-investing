@@ -65,7 +65,7 @@ def test_agent_fallback_diversify():
 
 
 # ---------------------------------------------------------------- /api/chat
-def _client():
+def _client(llm=None):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -84,7 +84,7 @@ def _client():
         store=store,
         repo=StateRepo(":memory:"),
         broker=PaperBroker(cash=10_000.0),
-        llm=GeminiClient(api_key=""),
+        llm=llm if llm is not None else GeminiClient(api_key=""),
         embedder=TfidfEmbedder(),
     )
     return TestClient(app)
@@ -120,3 +120,36 @@ def test_chat_expand_pins_supply_chain_neighbors():
     r = c.post("/api/chat", json={"message": "go deeper on NVDA suppliers", "session_id": sid, "live": False}).json()
     after = set(r["state"]["pinned"])
     assert after > before  # at least one neighbor pinned
+
+
+def test_chat_agent_read_tools_run_against_real_objects():
+    """A scripted LLM exercises every read-tool closure in /api/chat against the
+    real Store/Graph/Proposal — catches signature drift the fallback path can't."""
+    from smart_investing.llm.base import LLMClient, LLMResponse, ToolCall
+
+    class ScriptedLLM(LLMClient):
+        provider = "fake"
+
+        def __init__(self):
+            super().__init__(api_key="fake", model="fake-1")
+            self.script = [
+                LLMResponse(tool_calls=[
+                    ToolCall(name="get_portfolio", arguments={}, id="c1"),
+                    ToolCall(name="get_neighbors", arguments={"symbol": "NVDA"}, id="c2"),
+                    ToolCall(name="search_companies", arguments={"query": "memory chips"}, id="c3"),
+                ]),
+                LLMResponse(text="NVDA leads; MU supplies the memory."),
+            ]
+
+        def chat(self, messages, *, system=None, tools=None, json_mode=False, temperature=0.2):
+            if json_mode:  # compile_spec / explain paths -> use their fallbacks
+                raise RuntimeError("no json in this fake")
+            return self.script.pop(0) if self.script else LLMResponse(text="ok")
+
+    c = _client(llm=ScriptedLLM())
+    sid = c.post("/api/chat", json={"message": "ai data center gpus", "live": False}).json()["session_id"]
+    r = c.post("/api/chat", json={"message": "why NVDA?", "session_id": sid, "live": False})
+    assert r.status_code == 200
+    b = r.json()
+    assert set(b["researched"]) == {"get_portfolio", "get_neighbors", "search_companies"}
+    assert b["reply"] == "NVDA leads; MU supplies the memory."
